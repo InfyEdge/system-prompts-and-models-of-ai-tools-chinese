@@ -18,13 +18,6 @@
 
 > **声明：** 本项目仅供学习与研究使用。仓库中的提示词和模型文档仅用于帮助开发者理解相关 AI 工具的工作机制。详细说明请参阅 [DISCLAIMER.md](./DISCLAIMER.md)。
 
-## 📌 当前整理状态
-
-- 当前仓库正在进行一轮结构清理与提交收口，已完成对文档状态失真和目录异常的首轮修复。
-- `Anthropic/`、`OpenAI/`、`月之暗面（Moonshot AI）/` 等目录仍存在待审阅的新资料，后续会分批确认、整理并提交。
-- `阿里 Qoder/` 已按产品子目录整理，当前以 `Qoder/` 为主；`Vesa/` 目录已预留但尚未正式纳入版本管理。
-- `Bolt.new/` 目录名已标准化，避免隐藏字符导致的路径问题。
-
 ## 🚀 收录内容
 
 本项目当前收录了 35+ 主流及新兴 AI 编程工具的系统提示词和模型设计资料，包括但不限于：
@@ -182,6 +175,11 @@ Tool Name/
 - **校验方式**：你如何确认内容准确
 - **关联问题**：相关 Issue 或讨论链接
 
+## 🔄 上游来源
+
+- [x1xhlol/system-prompts-and-models-of-ai-tools](https://github.com/x1xhlol/system-prompts-and-models-of-ai-tools)
+- [asgeirtj/system_prompts_leaks](https://github.com/asgeirtj/system_prompts_leaks)
+
 ## 📅 后续计划
 
 - 继续审阅并分批提交 `Anthropic/`、`OpenAI/` 与 `月之暗面（Moonshot AI）/` 下的新资料。
@@ -214,36 +212,3 @@ Tool Name/
 ## 📜 许可证
 
 本项目采用 MIT 许可证，详见 [LICENSE.md](./LICENSE.md)。
-
-## 本轮同步（2026-04-13）
-
-- 已拉取并比对 `upstream-x1xhlol/main` 与 `upstream-asgeirtj/main`。
-- 已补齐 `Cursor Prompts/` 扁平目录新增文件，并为 Anthropic 新路径补齐本地映射译稿。
-- 已新增 `task.md` 与 `CONTRIBUTING.md`，用于记录上游差异、目录映射规则与后续批次翻译任务。
-- `Anthropic/Claude Sonnet 4.6.txt` 以及 `OpenAI/`、`Google/`、`Misc/` 的更多新增文件仍在待翻译清单中。
-
-## 本轮同步（2026-04-15）
-
-- 已从 `upstream-x1xhlol/main` 与 `upstream-asgeirtj/main` 补齐 14 个本地缺失文件，重点覆盖 Anthropic 4.6、OpenAI GPT-5.x、Google nano-banana 与 Meta AI 新增条目。
-- 已启动子代理按批次翻译新增文件；当前仓库先保留新同步的上游原文，待下一步将中文版本覆盖到对应文件。
-- `task.md` 已更新本轮缺失文件清单、映射判断与后续待办。
-
-## 本轮同步（2026-04-17）
-
-- 已重新拉取上游并确认新的本地未覆盖提示词文件为 `Anthropic/Official/claude-opus-4.7.md`，该文件已同步到 `Anthropic/claude-opus-4.7.md`。
-- 已按更细的批次重启子代理，继续翻译 Anthropic 4.6 / 4.7、OpenAI GPT-5.x、Google nano-banana 与 Meta AI 新增文件。
-- `task.md` 与 `CONTRIBUTING.md` 已补充本轮上游增量判断、缺失文件落地与同步原则，便于后续自动化接力。
-
-## 本轮同步（2026-05-06）
-
-- 已重新拉取 `upstream-x1xhlol/main` 与 `upstream-asgeirtj/main`，确认 `upstream-x1xhlol/main` 本轮只有 README / 资源素材更新，没有新的本地缺失提示词正文文件。
-- 已核对 `upstream-asgeirtj/main` 4 月下旬以来新增文件的本地覆盖关系；除 `Misc/cursor.md` 外，其余新增条目均已被本地中文目录或既有路径收录。
-- 已将 `upstream-asgeirtj/main:Misc/cursor.md` 按本仓库目录约定翻译落地到 `Cursor Prompts/cursor.md`，不保留 `Misc/cursor.md` 这类与现有分类冲突的双轨路径。
-- `task.md` 已补充本轮覆盖判断、映射关系与后续待办，便于下一轮继续处理 2026-04-15 与 2026-04-17 留下的大批量待译文件。
-
-## 本轮同步（2026-05-15）
-
-- 已重新拉取 `origin/main`、`upstream-x1xhlol/main` 与 `upstream-asgeirtj/main`；确认 `upstream-x1xhlol/main` 本轮没有新的本地未覆盖提示词正文文件，仍以素材与已覆盖路径重排为主。
-- 已按“文件名 + 语义映射”重新压缩 `upstream-asgeirtj/main` 的扁平新增路径，避免把已被本地产品目录承接的条目重复建成双轨文件。
-- 已补齐 10 个真正缺失的新文件，覆盖 Anthropic 历史/辅助文档、Google Gemini YouTube、Amp、Microsoft Copilot CLI、OpenCode、t3.chat、OpenAI Codex 与 xAI Grok Expert。
-- `task.md` 与 `CONTRIBUTING.md` 已补充 2026-05-15 的覆盖判断、映射原则与翻译批次，便于后续自动化继续接力。

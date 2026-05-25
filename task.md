@@ -158,3 +158,43 @@
 - 本轮已完成中文落地：`Google/Gemini/gemini-youtube.md`、`Open Source prompts/OpenCode/opencode.md`、`t3.chat/t3-code.md`、`OpenAI/Codex/gpt-5.3-codex-spark.md`、`OpenAI/Codex/plan_mode.md`。
 - 本轮仍待后续继续翻译：`Anthropic/old/claude-3.7-full-system-message-with-all-tools.md`、`Anthropic/visualize.md`、`Amp/amp-code.md`、`Microsoft Copilot/copilot-cli.md`、`Grok（xAI）/Features/grok-expert.md`。阻塞原因是部分子代理所在 worktree 继续命中 `windows sandbox: setup refresh failed with status exit code: 1`。
 - 若后续继续追 `upstream-asgeirtj/main` 的扁平目录扩张，默认先做文件名/语义覆盖判断，再决定是否需要新增文件。
+
+## 本轮同步（2026-05-24）
+
+### 本轮判断
+- `README.md` 只保留稳定项目说明、目录结构、贡献入口和正式上游来源，不再记录“本轮同步”“待处理”“结构清理中”这类运行态信息。
+- `task.md` 继续作为自动同步记录、缺失文件判断、翻译批次和阻塞信息的唯一任务面。
+- `.gitignore` 已明确忽略 `task.md` 与 `CONTRIBUTING.md`；同步时不把这些协作文件当作对外公开收录内容，也不要求在 `README.md` 中维护运行日志。
+- `asgeirtj/system_prompts_leaks` 继续视为正式上游来源，与 `x1xhlol/system-prompts-and-models-of-ai-tools` 并行核对。
+
+### 本轮覆盖核对
+- 基于本地只读检查，`Amp/amp-code.md`、`Microsoft Copilot/copilot-cli.md`、`Open Source prompts/OpenCode/opencode.md`、`t3.chat/t3-code.md` 等 2026-05-15 已记录的新增文件仍已落地。
+- 由于本轮 `git fetch` 受限于 worktree 下 `FETCH_HEAD` 写权限，无法安全刷新远端引用并确认 2026-05-24 时点是否还有新的未覆盖提示词正文文件。
+
+### 当前阻塞
+- `git -c safe.directory=... fetch --all --prune` 失败于 `C:/code/system-prompts-and-models-of-ai-tools-chinese/.git/worktrees/system-prompts-and-models-of-ai-tools-chinese4/FETCH_HEAD: Permission denied`。
+- 在该阻塞解除前，本轮不能真实完成上游抓取、缺失文件下载、子代理翻译、提交和推送。
+
+### 下轮继续
+- 先恢复该 worktree 对 `.git/worktrees/.../FETCH_HEAD` 的写权限，随后重新执行 `git fetch --all --prune`。
+- fetch 恢复后，优先核对 `upstream-asgeirtj/main` 与 `upstream-x1xhlol/main` 新增提示词正文，再决定是否需要补新文件和开启新一轮批量翻译。
+
+## 本轮同步（2026-05-26）
+
+### 本轮核对结果
+- 已重新执行 `git fetch --all --prune`，确认 `upstream-x1xhlol/main` 仍为 `b8e95891fe6c8f1db651a8ca4d8217f22c73849b`，本轮没有新的远端前进。
+- 已重新执行 `git fetch --all --prune`，确认 `upstream-asgeirtj/main` 前进到 `18516b700f2a4d135cbf5e6df3844d9d26d0e065`。
+- 对 `6565e659072d371fb02a01e36d5e478a5fb6e58c..18516b700f2a4d135cbf5e6df3844d9d26d0e065` 做逐文件差异核对后，提示词正文层面实际新增/变更仅有 `xAI/grok-build.md` 这一项；此前公开 README 中出现的其他较新条目，本轮并不属于这段新增提交。
+- 已按本仓库目录映射将 `upstream-asgeirtj/main:xAI/grok-build.md` 同步落地到 `Grok（xAI）/Features/grok-build.md`。
+
+### 主仓库现状
+- 主仓库 `C:/code/system-prompts-and-models-of-ai-tools-chinese` 处于 `main...origin/main [behind 4]`，且已经存在多处已修改/未跟踪文件，包含 `Anthropic/Claude_Code_CLI/claude-code.js`、`NotionAi/Notion AI.md`、`OpenAI/Codex/personality_friendly*.md` 以及一批未跟踪的 Anthropic / OpenAI / Meta 文件。
+- 在这些现有改动未经人工确认前，本轮不应直接在主仓库执行拉取、覆盖或整理，以免把用户现有工作与自动同步内容混在一起。
+
+### 当前状态
+- 当前 worktree 的 fetch 阻塞已解除，本轮已完成上游增量核对与缺失文件补入。
+- `Grok（xAI）/Features/grok-build.md` 当前先以同步上游原文入库，待下一轮按既有流程补齐中文译文。
+
+### 下轮继续
+- 优先补译 `Grok（xAI）/Features/grok-build.md`，并与 `Amp/amp-code.md`、`Microsoft Copilot/copilot-cli.md`、`Anthropic/visualize.md` 等历史待译文件一起纳入下一轮翻译批次。
+- 若主仓库仍保留现有未提交改动，继续优先在独立 worktree 完成同步与翻译，避免污染用户当前 `main` 工作区。

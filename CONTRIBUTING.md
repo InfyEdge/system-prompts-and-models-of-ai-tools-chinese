@@ -60,3 +60,15 @@
 - 覆盖检查优先看“是否已有本地等价文件名或稳定语义映射”，不要只按上游路径逐个新建；`Google/gemini-in-chrome.md` -> `Google/Gemini/gemini_in_chrome.md`、`Misc/notion-ai.md` -> `NotionAi/Notion AI.md` 这类情况视为已覆盖。
 - 若 `Misc/` 扁平目录中的条目已经能稳定归到既有产品目录，优先落入产品目录而不是保留 `Misc/` 双轨副本；例如 `Misc/amp-code.md` -> `Amp/amp-code.md`、`Misc/t3-code.md` -> `t3.chat/t3-code.md`、`Misc/opencode.md` -> `Open Source prompts/OpenCode/opencode.md`。
 - 若上游只是补了素材、索引、工作流或 README，而没有新增本地未覆盖的提示词正文文件，只在 `task.md` / `README.md` 记录判断结果，不额外制造镜像文件。
+
+## 自动同步备忘（2026-05-24）
+
+- 遵守仓库 `.gitignore` 的协作边界：`task.md` 与 `CONTRIBUTING.md` 用于本地任务和同步规则，不把它们当作公开收录内容写入 `README.md` 的运行日志。
+- `README.md` 只保留稳定事实，例如项目定位、目录结构、正式上游来源和贡献入口；批次进度、待翻译清单、目录清理状态统一写入 `task.md`。
+- `asgeirtj/system_prompts_leaks` 现已视为正式并行上游；做覆盖判断时与 `upstream-x1xhlol/main` 一起核对，但仍按本仓库既有中文目录映射落地，不镜像上游的临时扁平分类。
+
+## 自动同步备忘（2026-05-26）
+
+- 上游 `README.md` 中出现的新条目只可作为线索，不能直接当成本轮真实增量；应以 `git diff <last_synced>..<upstream_head>` 的具体文件结果为准。
+- 若上游增量实际只涉及单个正文文件，优先先把原文同步入库并更新 `task.md`，不要为了“看起来有很多新条目”而人为扩大本轮变更面。
+- 对 `xAI/` 这类上游扁平目录新增正文，若本仓库已有稳定中文产品目录，继续映射落地到 `Grok（xAI）/Features/` 或 `Grok（xAI）/Core_Models/`，不额外保留 `xAI/` 顶层副本。
