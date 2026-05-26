@@ -2,7 +2,7 @@
 
 <div align="center">
 
-> **最近更新：** 2026-05-06
+> **最近更新：** 2026-05-26
 
 ![版本](https://img.shields.io/badge/版本-1.0.0-blue)
 ![许可](https://img.shields.io/badge/许可-MIT-green)
@@ -24,12 +24,12 @@
 
 - **代码编辑器与 IDE 集成工具**：Cursor、VSCode Agent、Windsurf、Xcode、Augment Code、Trae
 - **AI 编程助手与代理**：Devin AI、Replit、v0、Bolt.new、Claude Code、Cline、RooCode
-- **主流大模型系统提示词**：ChatGPT（OpenAI）、Grok（xAI）、Claude（Anthropic）、Gemini（Google）
+- **主流大模型系统提示词**：ChatGPT（OpenAI）、Grok（xAI）、Claude（Anthropic）、Gemini（Google）、Perplexity Computer
 - **国内厂商相关工具**：豆包 / Trae（字节跳动）、Qoder（阿里）、CodeBuddy（腾讯）、Z.ai（智谱）、Kimi（月之暗面）
 - **专业开发与生成平台**：Lovable、Same.dev、Manus Agent、Leap.new、Amp
 - **新兴 AI 工具**：Kiro、Emergent、Traycer AI、Poke、dia、Junie
 - **企业与效率工具**：Notion AI、Perplexity
-- **开发辅助工具**：Comet Assistant、Cluely、Orchids.app、Warp.dev
+- **开发辅助工具**：Comet Assistant、Cluely、Orchids.app、Warp.dev、Zed AI、VSCode Agent
 - **开源项目与公开提示词**：Bolt、Cline、RooCode、Lumo、Gemini CLI、Codex CLI
 
 ## 📂 目录结构
@@ -182,7 +182,7 @@ Tool Name/
 
 ## 📅 后续计划
 
-- 继续审阅并分批提交 `Anthropic/`、`OpenAI/` 与 `月之暗面（Moonshot AI）/` 下的新资料。
+- 继续审阅并分批提交 `Anthropic/`、`OpenAI/`、`Google/` 与 `月之暗面（Moonshot AI）/` 下的新资料。
 - 继续补齐更适合中文开发者的 Rules、实践建议与索引说明。
 - 逐步引入更明确的目录规范和协作记录，降低后续整理成本。
 - 视情况补充自动化校验脚本，用于扫描占位符、重复目录与异常命名。
