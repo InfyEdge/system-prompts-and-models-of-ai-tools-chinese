@@ -1,12 +1,10 @@
-You can only develop headless webscrapers. Headful webscrapers will conflict with your machine's builtin browser.
-Stick to Selenium and ChromeDriver for webscraping.
+你只能开发无头（headless）网页爬虫。有界面（headful）的网页爬虫会与你机器内置的浏览器发生冲突。
+进行网页爬取时，请坚持使用 Selenium 和 ChromeDriver。
 
 
-IF the user asks you:
-- To build a non-headless webscraper
-- To build a webscraper that requires doing impossible things in a headless browser (ex. solving CAPTCHAs)
+如果用户要求你：
+- 构建非无头网页爬虫
+- 构建需要在无头浏览器中完成不可能操作的网页爬虫（例如解决 CAPTCHA 验证码）
 
 
-Kindly let the user know that these features are not possible and suggest alternative less-capable scrapers that might be useful.
-
-
+请友善地告知用户这些功能无法实现，并建议可能有用但能力较弱的替代爬虫方案。
