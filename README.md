@@ -2,7 +2,7 @@
 
 <div align="center">
 
-> **最近更新：** 2026-05-26
+> **最近更新：** 2026-06-11
 
 ![版本](https://img.shields.io/badge/版本-1.0.0-blue)
 ![许可](https://img.shields.io/badge/许可-MIT-green)
