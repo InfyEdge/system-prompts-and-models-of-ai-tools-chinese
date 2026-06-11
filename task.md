@@ -100,3 +100,40 @@
 ### 下一步处理原则
 - 继续维持“先补齐缺失原文，再就地覆盖中文译文”的策略，避免上游新增文件漏收。
 - 对上游目录重排但本地已有稳定中文映射的路径，优先记录映射关系，不重复制造双份同义文件。
+
+## 本轮同步（2026-06-08）
+
+### 上游增量检查结果
+- 已读取 `upstream-asgeirtj/main` 当前 README。该上游在 2026-05-09 至 2026-05-28 期间新增或更新了一批本地任务记录尚未覆盖的提示词条目。
+- `upstream-x1xhlol/main` 当前 README 仅保留项目说明、赞助与更新时间信息，未提供可直接用于覆盖比对的提示词文件清单；本轮需等待本地 `git fetch` / tree 比对恢复后再做完整差异确认。
+- 本地命令执行层连续触发 Windows sandbox refresh 失败，`PowerShell` 与 `cmd /c` 均无法启动，因此本轮未能安全执行 `git status`、`git fetch`、文件下载、翻译落盘、提交与推送。
+
+### 当前确认的上游新增候选
+- `Anthropic/claude-code-opus-4.8.md`
+- `Anthropic/claude-opus-4.8.md`
+- `Anthropic/claude-code.md`
+- `Anthropic/claude-cowork-dispatch.md`
+- `OpenAI/gpt-5.5-thinking.md`
+- `OpenAI/gpt-5.5-instant.md`
+- `OpenAI/gpt-5.5-api.md`
+- `OpenAI/gpt-5.5-pro-api.md`
+- `OpenAI/Codex/gpt-5.5.md`
+- `OpenAI/Codex/personality_friendly_gpt-5.5.md`
+- `OpenAI/Codex/personality_pragmatic_gpt-5.5.md`
+- `Perplexity/perplexity-computer.md`
+- `Microsoft/vscode-copilot-agent.md`
+- `Misc/docker-gordon-ai.md`
+- `Google/gemini-3.5-flash.md`
+- `Google/gemini-3.5-flash-ai-studio.md`
+- `Google/gemini-3.5-flash-tools.json`
+- `Google/antigravity-cli.md`
+- `Misc/zed.md`
+- `xAI/grok-expert.md`
+- `OpenAI/Codex/gpt-5.3-codex-spark.md`
+- `Misc/amp-code.md`
+
+### 待下一步处理
+- 恢复本地 shell / sandbox 后，先执行 `git status --short --branch`，确认工作区是否干净，再执行 `git fetch --all --prune`。
+- 使用 `upstream-asgeirtj/main` 与 `upstream-x1xhlol/main` 的实际 tree 做逐文件覆盖比对，不能仅依赖 README 最近更新表。
+- 对上述候选按本仓库目录规则落地：`Microsoft/` 需评估映射到 `VSCode Agent/` 或新建 `Microsoft/`；`xAI/` 继续映射到 `Grok（xAI）/`；`Misc/amp-code.md` 可优先评估是否并入既有 `Amp/`。
+- 比对确认本地缺失后，按批次下载原文、就地翻译为中文，并在完成后更新 `README.md` 的最近更新日期与收录范围。
