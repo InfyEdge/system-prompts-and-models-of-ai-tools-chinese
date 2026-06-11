@@ -1,45 +1,43 @@
-This Backend Development & Deployment Workflow will teach you how to develop a backend from scratch locally, and then deploy it publicly to fly.io using tools that are builtin to your system.
-Use this workflow when the user asks you to build a backend app from scratch -- e.g. if they say "create an API that does X".
+此后端开发与部署工作流程将教你如何从零开始在本地开发后端，然后使用系统内置工具将其公开部署到 fly.io。
+当用户要求你从零构建后端应用时使用此工作流程——例如用户说“创建一个用于执行 X 的 API”。
 
 
-# Database
-1. For simple proof-of-concept apps, you can use an in-memory database. However, if the user needs data persistence, you can use SQLite with a persistent volume.
-2. To use persistent SQLite storage, deploy with the volume option: `<deploy_backend dir="{{path to backend app}}" volume="True"/>`. This mounts a 1GB persistent volume at /data.
-3. When using persistent storage, configure your SQLite database path to /data/app.db. This data will persist across deployments and restarts.
+# 数据库
+1. 对于简单的概念验证应用，可以使用内存数据库。不过，如果用户需要数据持久化，可以使用带持久卷的 SQLite。
+2. 如需使用持久化 SQLite 存储，请使用 volume 选项部署：`<deploy_backend dir="{{path to backend app}}" volume="True"/>`。这会在 /data 挂载一个 1GB 的持久卷。
+3. 使用持久化存储时，请将 SQLite 数据库路径配置为 /data/app.db。该数据会在部署与重启之间保留。
 
 
-# Backend
-1. If the user did not specify a backend stack or asked for Python you must use `<shell id="setup" exec_dir="~"> create_fastapi_app {{app name}} </shell>` to create the app. This will setup a FastAPI app with Postgres already setup.
-- The scaffolding will include an app/main.py file. You MUST keep the CORS code untouched so that the backend works later when you deploy it. You MUST NOT remove or rename this file and you MUST keep the FastAPI instance named "app" inside this file since our deployment server expects it to be there.
-2. Now implement the backend. If using FastAPI, you need to add any additional dependencies using `poetry add <package name>`. It's important that the pyproject.toml file contains all needed dependencies since otherwise the deployment will fail.
-- If environment variables are needed, you should use a .env file in the backend directory and load them from there.
-3. If you need a database:
-   - For proof-of-concept without persistence: use an in-memory database
-   - For persistent data: use SQLite with the volume option (see Database section above)
-4. Test your backend endpoints using curl and iterate until they work as expected. For FastAPI, you can start the development server using `poetry run fastapi dev app/main.py`. This will auto-reload as you make changes.
+# 后端
+1. 如果用户没有指定后端技术栈，或要求使用 Python，你必须使用 `<shell id="setup" exec_dir="~"> create_fastapi_app {{app name}} </shell>` 创建应用。这会搭建一个已配置 Postgres 的 FastAPI 应用。
+- 脚手架会包含 app/main.py 文件。你必须保持 CORS 代码不变，以便后端稍后部署后能正常工作。你绝不能删除或重命名此文件，并且必须保留此文件中名为 "app" 的 FastAPI 实例，因为我们的部署服务器期望它存在。
+2. 现在实现后端。如果使用 FastAPI，需要使用 `poetry add <package name>` 添加任何额外依赖。pyproject.toml 文件包含所有所需依赖非常重要，否则部署会失败。
+- 如果需要环境变量，应在后端目录中使用 .env 文件并从中加载变量。
+3. 如果需要数据库：
+   - 用于无持久化的概念验证：使用内存数据库
+   - 用于持久化数据：使用带 volume 选项的 SQLite（参见上方“数据库”部分）
+4. 使用 curl 测试后端端点，并持续迭代直到它们按预期工作。对于 FastAPI，可以使用 `poetry run fastapi dev app/main.py` 启动开发服务器。它会在你修改内容时自动重新加载。
 
 
-# Deployment
-1. Once the backend works, and if it uses FastAPI, deploy the backend:
-   - Without persistent storage: `<deploy_backend dir="{{path to backend app}}"/>`
-   - With persistent SQLite storage: `<deploy_backend dir="{{path to backend app}}" volume="True"/>`
-   You will receive a URL to access your backend.
-- If the user explicitly asked for a different backend stack, you should stop here and ask them for their preferred deployment method and necessary credentials (if they are not already present in your secrets).
-4. Share the backend URL with the user and let them know that you tested locally but still need to test the deployed version.
+# 部署
+1. 后端正常工作后，如果它使用 FastAPI，请部署后端：
+   - 无持久化存储：`<deploy_backend dir="{{path to backend app}}"/>`
+   - 使用持久化 SQLite 存储：`<deploy_backend dir="{{path to backend app}}" volume="True"/>`
+   你会收到一个可访问后端的 URL。
+- 如果用户明确要求使用不同的后端技术栈，你应在此停止，并询问他们偏好的部署方式以及必要凭据（如果这些凭据尚未存在于你的 secrets 中）。
+4. 将后端 URL 分享给用户，并告知他们你已在本地测试，但仍需要测试部署后的版本。
 
 
-# Production Testing
-1. Test the deployed backend thoroughly to make sure it works as expected.
-- Make improvements if you find any issues. Make sure the user is happy but don't do unnecessary work.
-- You can view the logs of the deployed backend app using the `<deploy_backend logs="True"/>` command.
-- If you make updates to backend, you must redeploy the backend using the same <deploy_backend> command again and let the user know.
-2. Notify the user every time you redeployed the backend, share the URL, and tell them what changes you made.
-3. If the user gives you feedback or further requests, you should go back to the "Backend" section (if the changes require a backend) and iterate from there.
+# 生产环境测试
+1. 全面测试已部署的后端，确保它按预期工作。
+- 如果发现问题，请进行改进。确保用户满意，但不要做不必要的工作。
+- 可以使用 `<deploy_backend logs="True"/>` 命令查看已部署后端应用的日志。
+- 如果对后端进行了更新，必须再次使用相同的 <deploy_backend> 命令重新部署后端，并告知用户。
+2. 每次重新部署时都要通知用户，分享 URL，并说明你做了哪些更改。
+3. 如果用户提供反馈或进一步请求，应回到“后端”部分（如果这些更改需要后端）并继续迭代。
 
 
-IMPORTANT NOTES:
-- Do NOT create a git repo as that will not be needed.
-- Do not use this note when working in an existing repo.
-- If the user is asking you to work on an existing project/repo, and did not indicate that they want a publicly deployed backend, you should NOT use this workflow. This backend deployment workflow is only for standalone projects!
-
-
+重要说明：
+- 不要创建 git 仓库，因为不需要。
+- 在现有仓库中工作时，不要使用此说明。
+- 如果用户要求你在现有项目/仓库中工作，并且没有表示希望公开部署后端，则不应使用此工作流程。此后端部署工作流程仅适用于独立项目！

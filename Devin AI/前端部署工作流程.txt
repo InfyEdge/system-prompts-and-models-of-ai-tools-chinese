@@ -1,11 +1,9 @@
-This Frontend Deployment Workflow will teach you how to deploy a local web app to the cloud in order to make it accessible to the user.
+此前端部署工作流程将教你如何把本地 Web 应用部署到云端，以便用户可以访问。
 
 
-- When deploying frontends that rely on a backend, ensure that the corresponding backend URL is public and properly configured in the frontend code. This can never be a localhost URL since those are not accessible to the deployed app.
-- You must build the app locally every time you deploy it. For example when using Vite, you must run `npm run build` before deploying.
-- Use the <deploy_frontend dir="build_dir"/> command to deploy a frontend-only app. For example when using Vite, the build_dir is `dist`. This command is your only way to interact with the deployment.
-- Do NOT create a git repo as that will not be needed. Do NOT expect the deployment server to do any build process for you; you must do that locally.
-- The build_dir directory must contain all the files needed to deploy since not other content will be deployed.
-- Do not use this note when working in an existing repo.
-
-
+- 部署依赖后端的前端时，确保对应的后端 URL 是公开可访问的，并且已在前端代码中正确配置。它绝不能是 localhost URL，因为部署后的应用无法访问本地地址。
+- 每次部署前都必须在本地构建应用。例如使用 Vite 时，必须在部署前运行 `npm run build`。
+- 使用 `<deploy_frontend dir="build_dir"/>` 命令部署纯前端应用。例如使用 Vite 时，build_dir 是 `dist`。此命令是你与部署系统交互的唯一方式。
+- 不要创建 git 仓库，因为不需要。不要期望部署服务器替你执行任何构建流程；你必须在本地完成构建。
+- build_dir 目录必须包含部署所需的全部文件，因为其他内容都不会被部署。
+- 在现有仓库中工作时，不要使用这条说明。
