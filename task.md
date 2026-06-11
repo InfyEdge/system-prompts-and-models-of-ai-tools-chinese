@@ -65,3 +65,61 @@
 
 ### 下一步处理原则
 - 继续维持先补齐缺失原文再就地覆盖中文译文的策略，避免上游新增文件漏收。
+
+## 2026-06-11 全英文文件扫描与补译
+
+### 扫描方式
+
+- 使用脚本遍历仓库内所有普通文件，跳过 `.git`，统计中文字符与英文字母数量。
+- 判定标准：中文字符数为 0，且英文字母数大于 50 的文件视为“全英文待复核文件”。
+- 工具定义 JSON 文件暂按原始结构保留，避免误翻译键名、工具字段或 schema。
+
+### 本轮已完成翻译
+
+- `Devin AI/后端开发与部署工作流程.txt`
+- `Devin AI/前端部署工作流程.txt`
+- `Devin AI/网络爬虫工作流程.txt`
+- `VSCode Agent/vs-code-copilot-agent.md`
+
+### 仍待后续分批处理的全英文文件
+
+- `Misc/meta-ai.md`
+- `Meta/meta-ai.md`
+- `Microsoft Copilot/copilot-cli.md`
+- `OpenAI/gpt-5.3-instant.md`
+- `NotionAi/Notion-AI.md`
+- `Amp/amp-code.md`
+- `Bolt.new/prompts.txt`
+- `Anthropic/claude-opus-4.6.md`
+- `Anthropic/claude-desktop-code.md`
+- `Anthropic/claude-sonnet-4.6.md`
+- `Anthropic/claude-cowork.md`
+- `Anthropic/Claude Sonnet 4.6.txt`
+- `Anthropic/claude-sonnet-4.6-no-tools.md`
+- `Anthropic/claude-opus-4.6-no-tools.md`
+- `Anthropic/Features/claude-desktop-code.md`
+- `Anthropic/Features/claude-cowork.md`
+- `Anthropic/raw/claude-opus-4.6-raw.md`
+- `Anthropic/raw/claude-sonnet-4.6-raw.md`
+- `Anthropic/Core_Models/claude-3.7-full-system-message-with-all-tools.md`
+- `Anthropic/Core_Models/claude-opus-4.6.md`
+- `Anthropic/Core_Models/claude-sonnet-4.6.md`
+- `Anthropic/Core_Models/Claude Sonnet 4.6.txt`
+- `Anthropic/Core_Models/claude-sonnet-4.6-no-tools.md`
+- `Anthropic/Core_Models/claude-opus-4.6-no-tools.md`
+- `Anthropic/old/claude-3.7-full-system-message-with-all-tools.md`
+- `Anthropic/Core_Models/raw/claude-opus-4.6-raw.md`
+- `Anthropic/Core_Models/raw/claude-sonnet-4.6-raw.md`
+- `Anthropic/Core_Models/old/claude-3.7-sonnet.md`
+- `Anthropic/Core_Models/old/claude-opus-4.5.md`
+- `OpenAI/Core_Models/gpt-5.4-thinking.md`
+- `OpenAI/Core_Models/gpt-5.3-instant.md`
+- `Cursor Prompts/Agents_Composer/Agent Prompt 2.0.txt`
+- `Grok（xAI）/Features/grok-build.md`
+- `Grok（xAI）/Features/grok-expert.md`
+- `Grok（xAI）/Personalities/grok-personas.md`
+
+### 暂不翻译的全英文工具定义文件
+
+- `Bolt.new/tools.json`
+- `Google/Gemini/gemini-3.5-flash-tools.json`
