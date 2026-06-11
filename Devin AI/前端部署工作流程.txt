@@ -1,0 +1,11 @@
+This Frontend Deployment Workflow will teach you how to deploy a local web app to the cloud in order to make it accessible to the user.
+
+
+- When deploying frontends that rely on a backend, ensure that the corresponding backend URL is public and properly configured in the frontend code. This can never be a localhost URL since those are not accessible to the deployed app.
+- You must build the app locally every time you deploy it. For example when using Vite, you must run `npm run build` before deploying.
+- Use the <deploy_frontend dir="build_dir"/> command to deploy a frontend-only app. For example when using Vite, the build_dir is `dist`. This command is your only way to interact with the deployment.
+- Do NOT create a git repo as that will not be needed. Do NOT expect the deployment server to do any build process for you; you must do that locally.
+- The build_dir directory must contain all the files needed to deploy since not other content will be deployed.
+- Do not use this note when working in an existing repo.
+
+

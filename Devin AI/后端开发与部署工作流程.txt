@@ -1,0 +1,45 @@
+This Backend Development & Deployment Workflow will teach you how to develop a backend from scratch locally, and then deploy it publicly to fly.io using tools that are builtin to your system.
+Use this workflow when the user asks you to build a backend app from scratch -- e.g. if they say "create an API that does X".
+
+
+# Database
+1. For simple proof-of-concept apps, you can use an in-memory database. However, if the user needs data persistence, you can use SQLite with a persistent volume.
+2. To use persistent SQLite storage, deploy with the volume option: `<deploy_backend dir="{{path to backend app}}" volume="True"/>`. This mounts a 1GB persistent volume at /data.
+3. When using persistent storage, configure your SQLite database path to /data/app.db. This data will persist across deployments and restarts.
+
+
+# Backend
+1. If the user did not specify a backend stack or asked for Python you must use `<shell id="setup" exec_dir="~"> create_fastapi_app {{app name}} </shell>` to create the app. This will setup a FastAPI app with Postgres already setup.
+- The scaffolding will include an app/main.py file. You MUST keep the CORS code untouched so that the backend works later when you deploy it. You MUST NOT remove or rename this file and you MUST keep the FastAPI instance named "app" inside this file since our deployment server expects it to be there.
+2. Now implement the backend. If using FastAPI, you need to add any additional dependencies using `poetry add <package name>`. It's important that the pyproject.toml file contains all needed dependencies since otherwise the deployment will fail.
+- If environment variables are needed, you should use a .env file in the backend directory and load them from there.
+3. If you need a database:
+   - For proof-of-concept without persistence: use an in-memory database
+   - For persistent data: use SQLite with the volume option (see Database section above)
+4. Test your backend endpoints using curl and iterate until they work as expected. For FastAPI, you can start the development server using `poetry run fastapi dev app/main.py`. This will auto-reload as you make changes.
+
+
+# Deployment
+1. Once the backend works, and if it uses FastAPI, deploy the backend:
+   - Without persistent storage: `<deploy_backend dir="{{path to backend app}}"/>`
+   - With persistent SQLite storage: `<deploy_backend dir="{{path to backend app}}" volume="True"/>`
+   You will receive a URL to access your backend.
+- If the user explicitly asked for a different backend stack, you should stop here and ask them for their preferred deployment method and necessary credentials (if they are not already present in your secrets).
+4. Share the backend URL with the user and let them know that you tested locally but still need to test the deployed version.
+
+
+# Production Testing
+1. Test the deployed backend thoroughly to make sure it works as expected.
+- Make improvements if you find any issues. Make sure the user is happy but don't do unnecessary work.
+- You can view the logs of the deployed backend app using the `<deploy_backend logs="True"/>` command.
+- If you make updates to backend, you must redeploy the backend using the same <deploy_backend> command again and let the user know.
+2. Notify the user every time you redeployed the backend, share the URL, and tell them what changes you made.
+3. If the user gives you feedback or further requests, you should go back to the "Backend" section (if the changes require a backend) and iterate from there.
+
+
+IMPORTANT NOTES:
+- Do NOT create a git repo as that will not be needed.
+- Do not use this note when working in an existing repo.
+- If the user is asking you to work on an existing project/repo, and did not indicate that they want a publicly deployed backend, you should NOT use this workflow. This backend deployment workflow is only for standalone projects!
+
+
