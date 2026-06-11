@@ -2,7 +2,7 @@
 
 <div align="center">
 
-> **最近更新：** 2026-04-13
+> **最近更新：** 2026-05-26
 
 ![版本](https://img.shields.io/badge/版本-1.0.0-blue)
 ![许可](https://img.shields.io/badge/许可-MIT-green)
@@ -18,25 +18,18 @@
 
 > **声明：** 本项目仅供学习与研究使用。仓库中的提示词和模型文档仅用于帮助开发者理解相关 AI 工具的工作机制。详细说明请参阅 [DISCLAIMER.md](./DISCLAIMER.md)。
 
-## 📌 当前整理状态
-
-- 当前仓库正在进行一轮结构清理与提交收口，已完成对文档状态失真和目录异常的首轮修复。
-- `Anthropic/`、`OpenAI/`、`月之暗面（Moonshot AI）/` 等目录仍存在待审阅的新资料，后续会分批确认、整理并提交。
-- `阿里 Qoder/` 已按产品子目录整理，当前以 `Qoder/` 为主；`Vesa/` 目录已预留但尚未正式纳入版本管理。
-- `Bolt.new/` 目录名已标准化，避免隐藏字符导致的路径问题。
-
 ## 🚀 收录内容
 
 本项目当前收录了 35+ 主流及新兴 AI 编程工具的系统提示词和模型设计资料，包括但不限于：
 
 - **代码编辑器与 IDE 集成工具**：Cursor、VSCode Agent、Windsurf、Xcode、Augment Code、Trae
 - **AI 编程助手与代理**：Devin AI、Replit、v0、Bolt.new、Claude Code、Cline、RooCode
-- **主流大模型系统提示词**：ChatGPT（OpenAI）、Grok（xAI）、Claude（Anthropic）、Gemini（Google）
+- **主流大模型系统提示词**：ChatGPT（OpenAI）、Grok（xAI）、Claude（Anthropic）、Gemini（Google）、Perplexity Computer
 - **国内厂商相关工具**：豆包 / Trae（字节跳动）、Qoder（阿里）、CodeBuddy（腾讯）、Z.ai（智谱）、Kimi（月之暗面）
 - **专业开发与生成平台**：Lovable、Same.dev、Manus Agent、Leap.new、Amp
 - **新兴 AI 工具**：Kiro、Emergent、Traycer AI、Poke、dia、Junie
 - **企业与效率工具**：Notion AI、Perplexity
-- **开发辅助工具**：Comet Assistant、Cluely、Orchids.app、Warp.dev
+- **开发辅助工具**：Comet Assistant、Cluely、Orchids.app、Warp.dev、Zed AI、VSCode Agent
 - **开源项目与公开提示词**：Bolt、Cline、RooCode、Lumo、Gemini CLI、Codex CLI
 
 ## 📂 目录结构
@@ -182,9 +175,14 @@ Tool Name/
 - **校验方式**：你如何确认内容准确
 - **关联问题**：相关 Issue 或讨论链接
 
+## 🔄 上游来源
+
+- [x1xhlol/system-prompts-and-models-of-ai-tools](https://github.com/x1xhlol/system-prompts-and-models-of-ai-tools)
+- [asgeirtj/system_prompts_leaks](https://github.com/asgeirtj/system_prompts_leaks)
+
 ## 📅 后续计划
 
-- 继续审阅并分批提交 `Anthropic/`、`OpenAI/` 与 `月之暗面（Moonshot AI）/` 下的新资料。
+- 继续审阅并分批提交 `Anthropic/`、`OpenAI/`、`Google/` 与 `月之暗面（Moonshot AI）/` 下的新资料。
 - 继续补齐更适合中文开发者的 Rules、实践建议与索引说明。
 - 逐步引入更明确的目录规范和协作记录，降低后续整理成本。
 - 视情况补充自动化校验脚本，用于扫描占位符、重复目录与异常命名。
@@ -214,22 +212,3 @@ Tool Name/
 ## 📜 许可证
 
 本项目采用 MIT 许可证，详见 [LICENSE.md](./LICENSE.md)。
-
-## 本轮同步（2026-04-13）
-
-- 已拉取并比对 `upstream-x1xhlol/main` 与 `upstream-asgeirtj/main`。
-- 已补齐 `Cursor Prompts/` 扁平目录新增文件，并为 Anthropic 新路径补齐本地映射译稿。
-- 已新增 `task.md` 与 `CONTRIBUTING.md`，用于记录上游差异、目录映射规则与后续批次翻译任务。
-- `Anthropic/Claude Sonnet 4.6.txt` 以及 `OpenAI/`、`Google/`、`Misc/` 的更多新增文件仍在待翻译清单中。
-
-## 本轮同步（2026-04-15）
-
-- 已从 `upstream-x1xhlol/main` 与 `upstream-asgeirtj/main` 补齐 14 个本地缺失文件，重点覆盖 Anthropic 4.6、OpenAI GPT-5.x、Google nano-banana 与 Meta AI 新增条目。
-- 已启动子代理按批次翻译新增文件；当前仓库先保留新同步的上游原文，待下一步将中文版本覆盖到对应文件。
-- `task.md` 已更新本轮缺失文件清单、映射判断与后续待办。
-
-## 本轮同步（2026-04-17）
-
-- 已重新拉取上游并确认新的本地未覆盖提示词文件为 `Anthropic/Official/claude-opus-4.7.md`，该文件已同步到 `Anthropic/claude-opus-4.7.md`。
-- 已按更细的批次重启子代理，继续翻译 Anthropic 4.6 / 4.7、OpenAI GPT-5.x、Google nano-banana 与 Meta AI 新增文件。
-- `task.md` 与 `CONTRIBUTING.md` 已补充本轮上游增量判断、缺失文件落地与同步原则，便于后续自动化接力。
