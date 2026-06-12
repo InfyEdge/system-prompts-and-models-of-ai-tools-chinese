@@ -1,11 +1,11 @@
 [
   {
     "name": "google:ds_python_interpreter",
-    "description": "Execute Python code in a secure, isolated sandboxed Linux container (gVisor). It comes pre-installed with major data science, scientific computing, and machine learning libraries (such as NumPy, Pandas, Scipy, Scikit-learn, PyTorch, TensorFlow). Used for advanced computations, data analysis, and algorithmic scripting.",
+    "description": "在安全、隔离的沙盒 Linux 容器（gVisor）中执行 Python 代码。环境已预装主要的数据科学、科学计算和机器学习库（如 NumPy、Pandas、Scipy、Scikit-learn、PyTorch、TensorFlow）。用于高级计算、数据分析和算法脚本编写。",
     "parameters": {
       "properties": {
         "code": {
-          "description": "The exact Python code script to be executed within the environment.",
+          "description": "要在该环境中执行的精确 Python 代码脚本。",
           "type": "STRING"
         }
       },
@@ -17,11 +17,11 @@
   },
   {
     "name": "google:search",
-    "description": "Search the web for relevant information when up-to-date knowledge or factual verification is needed. The results will include relevant snippets from web pages.",
+    "description": "当需要最新知识或事实核验时，搜索网页上的相关信息。结果将包含网页中的相关摘要片段。",
     "parameters": {
       "properties": {
         "queries": {
-          "description": "The list of queries to issue searches with",
+          "description": "用于发起搜索的查询列表。",
           "items": {
             "type": "STRING"
           },
@@ -36,16 +36,16 @@
   },
   {
     "name": "gemkick_corpus:search",
-    "description": "This operation queries and fetches content of user's Google Workspace items based on the user query. Right now, only Gmail and Google Drive are supported.\n",
+    "description": "此操作会根据用户查询，检索并获取用户 Google Workspace 项目的内容。目前仅支持 Gmail 和 Google Drive。\n",
     "parameters": {
       "properties": {
         "corpus": {
-          "description": "Which Google Workspace corpus to search over, right now, only `GMAIL` and `GOOGLE_DRIVE` are supported.\n",
+          "description": "要搜索的 Google Workspace 语料库。目前仅支持 `GMAIL` 和 `GOOGLE_DRIVE`。\n",
           "nullable": true,
           "type": "STRING"
         },
         "query": {
-          "description": "Query used to fetch information from Gmail or Google Drive. This should be a natural language query and it should only contain information relevant to emails or files from Google Workspace. Include keywords from the conversation history if they are relevant to the current search.\n",
+          "description": "用于从 Gmail 或 Google Drive 获取信息的查询。它应是自然语言查询，并且只应包含与 Google Workspace 中邮件或文件相关的信息。如果对当前搜索相关，请包含对话历史中的关键词。\n",
           "type": "STRING"
         }
       },
@@ -57,15 +57,15 @@
   },
   {
     "name": "youtube:search",
-    "description": "Search for videos, channels or playlists on Youtube. Search cannot filter by popularity. Search can find relevant videos, channels, and playlists for a given query string. Please use this endpoint for finding relevant videos for a given open ended question, e.g., \"funny cats and dog videos.\" Always use youtube for queries about videos, except for questions relating to video popularity.",
+    "description": "在 YouTube 上搜索视频、频道或播放列表。搜索无法按热度筛选。搜索可以根据给定查询字符串找到相关视频、频道和播放列表。请使用此端点为给定的开放式问题查找相关视频，例如“funny cats and dog videos”。除与视频热度相关的问题外，关于视频的查询始终使用 youtube。",
     "parameters": {
       "properties": {
         "query": {
-          "description": "The query with which search should be performed.",
+          "description": "执行搜索所使用的查询。",
           "type": "STRING"
         },
         "result_type": {
-          "description": "Enum to specify search result type. Set to VIDEO to search for videos, CHANNEL to search for channels, artists or users, and PLAYLIST to search for playlist, radio or mix.",
+          "description": "用于指定搜索结果类型的枚举。设为 VIDEO 可搜索视频，设为 CHANNEL 可搜索频道、艺人或用户，设为 PLAYLIST 可搜索播放列表、电台或混音。",
           "enum": [
             "VIDEO",
             "CHANNEL",
