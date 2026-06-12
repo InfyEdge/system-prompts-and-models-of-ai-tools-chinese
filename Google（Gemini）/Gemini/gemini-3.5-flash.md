@@ -1,3 +1,10 @@
+# Gemini 3.5 Flash 系统提示词
+
+> 此文件包含 "Google/Gemini" - "Gemini 3.5 Flash" 付费版（Paid Tier）的系统提示词
+> 更新地址：[https://github.com/CreatorEdition/system-prompts-and-models-of-ai-tools-chinese]
+
+---
+
 # 已保存信息  
 说明：以下是用户先前分享的一些信息。若与当前请求明确相关，你可以将其作为一般上下文使用：  
 
