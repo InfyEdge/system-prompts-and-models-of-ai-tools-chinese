@@ -2609,3 +2609,1279 @@ umask 077
 ## 步骤 1：解析目标并收集差异
 
 差异收集命令因模式而异。
+
+### 本地模式
+
+```bash
+git diff HEAD
+git diff --cached
+git ls-files --others --exclude-standard
+```
+
+将所有三个输出合并到 `diff_file`。还从 `git status --porcelain` 中提取 `changed_files`。
+
+### 分支模式
+
+1. 找到合并基础：
+   ```bash
+   git merge-base origin/<default-branch> <target-branch>
+   ```
+2. 生成差异：
+   ```bash
+   git diff <merge-base>..<target-branch>
+   ```
+   写入 `diff_file`。
+3. 提取 `changed_files`：
+   ```bash
+   git diff --name-only <merge-base>..<target-branch>
+   ```
+
+### PR 模式
+
+1. 解析 `target`：
+   - 如果是 URL：从 URL 中提取 `owner`、`repo`、`pr_number`。
+   - 如果是数字：从当前仓库确定 `owner` / `repo`，使用 `pr_number = target`。
+2. 获取 PR 元数据：
+   ```bash
+   gh pr view <pr_number> --repo <owner>/<repo> --json number,title,headRefOid,baseRefOid,url
+   ```
+   解析并存储 `pr_number`、`pr_title`、`head_sha`、`base_sha`、`pr_url`。
+3. 获取差异：
+   ```bash
+   gh pr diff <pr_number> --repo <owner>/<repo>
+   ```
+   写入 `diff_file`。
+4. 获取已更改文件列表：
+   ```bash
+   gh pr view <pr_number> --repo <owner>/<repo> --json files --jq '.files[].path'
+   ```
+   存储为 `changed_files`。
+
+## 步骤 2：启动审查者子代理
+
+使用之前读取的 `reviewer_persona_instructions`，构造完整提示：
+
+```
+<reviewer_persona_instructions 的内容>
+
+你的任务：审查以下差异。
+
+<在此处插入特定于模式的上下文>
+
+差异已写入 <diff_file 路径>。
+
+将你的审查写入 <review_file 路径>。
+```
+
+启动子代理：
+
+```
+spawn_subagent(
+  subagent_type: "general-purpose",
+  prompt: <上述构造的提示>,
+  background: true
+)
+```
+
+捕获返回的 `task_id`。
+
+## 步骤 3：等待审查完成
+
+```
+get_command_or_subagent_output(task_id, block: true, timeout_ms: 600000)
+```
+
+如果子代理失败或超时，报告错误并退出。
+
+## 步骤 4：解析审查并在 PR 模式下发布
+
+**在所有模式下**：验证 `review_file` 存在且非空。如果为空或缺失，报告错误并退出。
+
+**仅在 PR 模式下**：
+
+1. 解析 `review_file` 为审查评论结构。预期格式：每个评论一个 markdown 块，带有 `file:` 和 `line:` 元数据头。
+2. 将评论批量处理为待定审查：
+   ```bash
+   gh api --method POST /repos/{owner}/{repo}/pulls/{pr_number}/reviews \
+     -f body="<审查摘要>" \
+     -f event="COMMENT" \
+     -F comments=@<pending_review_payload>
+   ```
+   其中 `pending_review_payload` 是从 `review_file` 构造的 JSON 负载。
+3. 报告待定审查 URL。
+
+**仅在本地/分支模式下**：
+
+编写一个简短的 markdown 摘要到 `summary_file`，包含：
+- 审查的差异（本地/分支）
+- 找到的问题数量
+- 关键发现的简要列表
+
+向用户显示摘要并引导他们查看 `review_file` 以获取完整细节。
+
+---
+
+# PR 保姆技能
+
+你是一个编排器，运行一个持续循环，监视一组 GitHub pull request 并自动修复常见问题。
+
+## 核心行为
+
+你**从不**直接检查分支、进行 git 操作或编辑代码。所有 git 和代码工作都委托给子代理，每个子代理在自己的隔离工作树中运行。编排器只负责查询 GitHub API、管理观察列表状态，以及协调并行子代理。
+
+### 状态文件
+
+状态持久化在 `~/.grok-babysit-state.json` 中，模式：
+
+```json
+{
+  "prs": [
+    {
+      "repo": "owner/repo",
+      "number": 123,
+      "last_status": "healthy",
+      "fix_count": 5,
+      "stack_id": "feature-x",
+      "stack_type": "graphite",
+      "stack_position": 1
+    }
+  ],
+  "groups": {
+    "feature-x": {
+      "subagent_id": "abc123",
+      "worktree_path": "/path/to/worktree"
+    },
+    "pr-456": {
+      "subagent_id": "def456",
+      "worktree_path": "/path/to/other/worktree"
+    }
+  }
+}
+```
+
+- `prs`：被监视的 PR 列表
+- `last_status`：`"healthy"` | `"pending"` | `"ci_failed"` | `"conflicts"` | `"changes_requested"` | `"threads_unresolved"` | `"ci_needs_attention"` | `"error"`
+- `fix_count`：应用的总修复次数（所有周期累计）
+- `stack_id`：对于堆叠 PR（graphite 或 GitHub 堆栈），是共享的堆栈标识符；对于独立 PR 为 `null`
+- `stack_type`：`"graphite"`（使用 `gt` CLI）、`"github"`（使用 `gh stack` CLI）或 `null`（纯 git）
+- `stack_position`：堆栈中从底部开始的位置（0 = 底部，1 = 在其上方，等等）；对于独立 PR 为 `0`
+- `groups`：每个非重叠组（堆栈或独立 PR）的持久化元数据映射。键是堆栈的 `stack_id` 或独立 PR 的 `"pr-<number>"`。值包含 `subagent_id`（用于 `resume_from` 的任务 ID）和 `worktree_path`（用于清理）。
+
+所有状态更改必须在每个检查周期后持久化（写回 JSON 文件）。
+
+### 调用
+
+```
+/pr-babysit add <pr-url-or-number> [<pr-url-or-number> ...]
+/pr-babysit remove <pr-url-or-number> [<pr-url-or-number> ...]
+/pr-babysit list
+/pr-babysit check [--now]
+/pr-babysit stop
+```
+
+- `add`：将一个或多个 PR 添加到观察列表
+- `remove`：从观察列表中移除 PR
+- `list`：显示当前观察列表
+- `check`：运行一个检查周期。如果提供了 `--now`，则只运行一次并退出。否则，安排一个循环任务，每隔 `N` 分钟重新运行一次（默认 `N = 10`；可配置）。
+- `stop`：终止循环任务（如果存在）并退出
+
+### 添加 PR
+
+用户运行 `/pr-babysit add <id> [<id> ...]`。对于每个提供的标识符：
+
+1. 解析为 `owner`、`repo`、`pr_number`（如果是 URL，则解析；如果是纯数字，则从当前 git 仓库推断 `owner/repo`）。
+2. 查询 PR 元数据和堆栈状态（见下方的"堆栈检测"）。
+3. 将条目附加到 `prs` 数组，其中 `last_status: "pending"`、`fix_count: 0`，以及如果检测到则附加 `stack_id`、`stack_type`、`stack_position`（否则为 `null`/`0`）。
+4. 持久化状态。
+
+### 移除 PR
+
+用户运行 `/pr-babysit remove <id> [<id> ...]`。对于每个标识符：
+
+1. 解析为 `owner`、`repo`、`pr_number`。
+2. 从 `prs` 数组中移除匹配的条目。
+3. 如果该 PR 是某个堆栈的一部分，检查该堆栈是否还有其他 PR。如果没有，运行步骤 7 清理该组（删除其工作树），然后从 `groups` 映射中移除该组键。
+4. 持久化状态。
+
+### 列出 PR
+
+用户运行 `/pr-babysit list`。
+
+1. 读取状态文件。
+2. 显示带有仓库、编号、状态和修复计数的表格。
+3. 对于堆叠 PR，在其编号旁边显示堆栈指示器（例如，`#123 [stack:feature-x:1/3]`）。
+4. 按 `stack_id` 分组。单独显示独立 PR。
+
+## 检查周期
+
+这是核心循环。它在手动 `/pr-babysit check` 和通过 `/loop` 的计划触发器上运行。
+
+### 步骤 1：先决条件
+
+1. 验证身份验证：
+   ```bash
+   gh auth status
+   ```
+
+2. 确定当前仓库：
+   ```bash
+   gh repo view --json nameWithOwner --jq '.nameWithOwner'
+   ```
+   拆分为 `OWNER` 和 `REPO` 用于 API 调用。
+
+3. 获取最新引用：
+   ```bash
+   git fetch origin
+   ```
+
+### 步骤 2：读取状态并验证
+
+1. 读取状态文件。如果不存在，创建默认文件并退出。
+   **状态迁移**：读取后，检查每个 PR 条目是否缺少在后续版本中添加的字段（`stack_id`、`stack_type`、`stack_position`）。如果任何字段缺失，用默认值回填：`stack_id: null`、`stack_type: null`、`stack_position: 0`。还要确保 `groups` 键存在（默认 `{}`）。迁移后重新持久化状态文件。这确保了与在添加堆栈支持之前创建的旧状态文件的向后兼容性。
+2. 将 `prs` 过滤为仅匹配当前仓库的那些。
+3. 如果过滤后的列表为空：清理任何陈旧的 `groups` 条目（为所有不再有关联 PR 的剩余组运行步骤 7 清理，然后清除 `groups` 映射并重新持久化状态文件）。然后调用 `scheduler_list`。如果任何计划任务的提示包含 `pr-babysit`，则使用该任务的 ID 调用 `scheduler_delete` 以自我终止循环。报告"观察列表中无 PR"并退出。
+
+### 步骤 3：分组、排序并识别非重叠组
+
+按 `stack_id` 对 PR 进行分组。**自下而上**处理堆栈（`stack_position` 升序）。以任意顺序处理独立 PR（`stack_id: null`）。
+
+识别用于并行处理的**非重叠组**：
+- 每个堆栈（共享相同 `stack_id` 的 PR 集合，无论 `stack_type` 如何）是一个组。
+- 每个独立 PR（`stack_id: null`）是其自己的组。
+- 这些组是独立的，将通过单独的工作树和子代理并行处理。
+- `stack_type` 字段决定子代理在每个组内使用哪个 CLI 工具进行 restack/push 操作。
+
+### 步骤 4：使用工作树并行处理
+
+对于在步骤 3 中识别的每个非重叠组，启动一个子代理并行处理它。`spawn_subagent` 的 `isolation: "worktree"` 参数自动处理工作树创建。
+
+#### 4a. 子代理调度
+
+通过调用 `spawn_subagent` 为每个非重叠组启动一个子代理。使用 `group_key` 标识每个组：堆栈的 `stack_id` 或独立 PR 的 `"pr-<number>"`。
+
+**启动顺序**：一次启动一个子代理（顺序），但在启动下一个之前不要等待任何子代理的输出。所有子代理使用 `background: true`，因此每次启动立即返回一个 `task_id`。首先收集所有 `task_id`，然后移至步骤 4b 等待结果。这确保所有组同时运行。
+
+**最大并发数**：最多同时启动 **8** 个子代理。如果有超过 8 个非重叠组，分批处理它们：启动前 8 个组，等待所有完成（步骤 4b），然后启动下一批。这可以防止大规模资源耗尽（CPU、内存、来自工作树的磁盘、GitHub API 速率限制）。
+
+**恢复逻辑**：启动前，检查状态文件中是否存在 `groups[group_key]`（有关模式，请参阅状态文件部分）。
+
+- **如果 `groups[group_key].subagent_id` 存在**：使用 `resume_from: <stored_subagent_id>` 恢复先前的子代理。恢复的子代理应继承其先前的工作树和完整的对话上下文（首次使用时验证此行为）。将新周期的 PR 列表和指令作为提示传递。**回退**：如果恢复失败（找不到子代理、会话过期、工具拒绝 ID），记录警告，从 `groups[group_key]` 中丢弃陈旧的 `subagent_id`，然后启动一个新的子代理。用新的 `subagent_id` 和 `worktree_path` 更新 `groups[group_key]`。
+- **如果不存在先前的子代理**：启动一个新的子代理。
+
+在这两种情况下，使用这些 `spawn_subagent` 参数：
+
+- `subagent_type: "general-purpose"`
+- `isolation: "worktree"`（`spawn_subagent` 自动创建和管理工作树）
+- `background: true`（并行处理组）
+
+子代理提示必须包括：
+- 此组中的 PR 列表（如果适用，带有堆栈排序）
+- 此组的 `stack_type`（`"graphite"`、`"github"` 或 `null`），以便子代理知道用于 restack/push 的 CLI 工具
+- 仓库 `OWNER` 和 `REPO` 值
+- 下面步骤 5 中的完整子代理逻辑（查询 + 决策树）
+- 步骤 4b 所需的 JSON 输出格式（子代理必须在其输出末尾发出的 `pr_results` 摘要块）
+
+每个子代理端到端处理其组的 PR：查询、诊断、修复、提交、推送。
+
+**启动失败处理**：如果 `spawn_subagent` 调用本身对某个组失败（例如，配额超出、无效的 `resume_from` ID、网络错误），不要中止整个周期。相反：记录错误，为该组中的所有 PR 设置 `last_status` 为 `"error"`，清除 `groups[group_key].subagent_id`（以便下一个周期使用新的子代理重试），并继续为其余组启动子代理。只有成功启动的子代理（那些具有有效 `task_id` 的）才会添加到步骤 4b 收集的 `task_id`/`group_key` 映射中。
+
+#### 4b. 等待并收集结果
+
+**只有在步骤 4a 的所有子代理都已启动后才开始此步骤。** 在每个组的子代理都已启动且您拥有所有 `task_id` 之前，不要为任何子代理调用 `get_command_or_subagent_output`。
+
+**维护 `task_id` 到 `group_key` 的映射**：当您在步骤 4a 中启动每个子代理时，记录返回的 `task_id` 及其 `group_key`（例如，在 `{task_id, group_key}` 对的列表中）。在下面收集结果时，使用此映射将每个 `get_command_or_subagent_output` 结果与正确的组关联以进行状态更新。
+
+然后，对于每个子代理（遍历 `task_id`/`group_key` 对），使用 `get_command_or_subagent_output` 并设置 `block: true` 和 `timeout_ms: 1800000`（30 分钟）来收集结果。
+
+**如果子代理失败**：记录错误，为该组中的所有 PR 设置 `last_status` 为 `"error"`，并继续从其他组收集结果。单个失败的子代理不得阻止整个检查周期。
+
+**如果 `get_command_or_subagent_output` 超时**：子代理可能仍在后台运行。使用 `kill_command_or_subagent(<task_id>)` 杀死它，清除 `groups[group_key].subagent_id`（以便下一个周期启动新的子代理而不是尝试恢复已杀死的子代理），并为该组中的所有 PR 设置 `last_status` 为 `"error"`。
+
+每个子代理必须以结构化的 JSON 摘要块结束其输出以进行可靠的解析：
+
+```json
+{"pr_results": [
+  {"number": 123, "last_status": "healthy", "fix_count_delta": 1, "removed": false},
+  {"number": 124, "last_status": "ci_failed", "fix_count_delta": 2, "removed": false}
+]}
+```
+
+每个 PR 的字段：
+- `last_status` — 处理后的状态
+- `fix_count_delta` — 此周期应用的修复次数
+- `removed` — 如果 PR 已合并/关闭并从观察列表中移除，则为 `true`
+
+将所有子代理的结果合并到主状态中。
+
+**收集每个子代理的结果后**，更新状态中的 `groups[group_key]`。两个值都来自 `spawn_subagent` 的返回值（而不是子代理的 JSON 输出）：
+- `subagent_id`：`spawn_subagent` 调用返回的 `task_id`。存储此值以在下一个周期中与 `resume_from` 一起使用。
+- `worktree_path`：当使用 `isolation: "worktree"` 时，`spawn_subagent` 的结果包含一个 `worktree_path` 字段，其中包含已创建工作树的绝对路径。存储此值以用于步骤 7 清理。
+
+### 步骤 5：子代理逻辑 — 查询和决策树
+
+本节定义每个子代理为其分配的 PR 组执行的逻辑。
+
+#### 工作树初始化
+
+`spawn_subagent` 的 `isolation: "worktree"` 参数自动提供一个干净的工作树。子代理已经在工作树内运行；不需要 `cd` 或手动设置。
+
+**警告**：如果该分支已在主工作区或另一个工作树中检出，`git checkout <branch>` 将失败（git 禁止在多个工作树中使用相同的分支引用）。为避免这种情况，使用 `git checkout -B <branch> origin/<branch>`，它会在远程跟踪引用处强制创建本地分支，或者通过 `git checkout --detach origin/<branch>` 使用分离的 HEAD。这在正常使用中不常见，因为主工作区通常在 `main` 上，但如果发生，记录一个特定的警告，标识分支冲突并建议用户在主工作区中切换分支。
+
+**在任何修复操作之前获取远程引用，而不是在启动时无条件获取。** 如果 PR 是健康的、待处理的、已合并的或处于未知的可合并状态，则不需要 git 操作，获取会浪费时间并造成锁争用。相反，为每个子代理跟踪一个布尔 `has_fetched` 标志（初始为 false）。在需要最新引用的第一个操作之前（任何 `git checkout`、`git rebase` 或 `gt restack`），检查 `has_fetched` — 如果为 false，运行获取并将其设置为 true。注意：`gh stack rebase` 在内部处理自己的获取，因此在它之前不需要 `has_fetched` 保护。
+
+```bash
+git fetch origin || (sleep 2 && git fetch origin) || FETCH_FAILED=true
+```
+
+如果设置了 `FETCH_FAILED`，子代理必须为当前 PR 设置 `last_status` 为 `"error"`，记录两次获取尝试都失败，并跳过此 PR 的所有 git 操作。不要尝试使用陈旧引用进行检出、变基或重新堆叠。
+
+重试处理当多个子代理并行获取时的瞬态锁争用。此获取是关键的 — 没有新的引用，`git rebase origin/<baseRefName>` 或 `gt restack` 将变基到陈旧的历史记录上，要么失败，要么产生不正确的结果。（`gh stack rebase` 在内部获取，不需要此预获取。）
+
+为分配给此子代理的每个 PR 初始化一个每周期修复计数器（在内存中，不持久化）。将每个设置为 0。
+
+#### 查询每个 PR
+
+```bash
+gh pr view <number> --json state,mergeable,mergeStateStatus,statusCheckRollup,reviewDecision,headRefName,baseRefName
+```
+
+如果 `gh pr view` 失败（网络错误、速率限制、身份验证过期），记录错误，设置 `last_status` 为 `"error"`，并继续下一个 PR。
+
+#### 决策树
+
+按此顺序评估 PR 状态：
+
+1. 按顺序处理关键操作：MERGED/CLOSED、CONFLICTS、CI FAILED。如果 MERGED/CLOSED 匹配，则跳过此 PR 的所有剩余步骤。CONFLICTS 和 CI FAILED **不是**互斥的 — 在解决冲突后，在同一周期中继续处理 CI 失败。`mergeable` 为 `"UNKNOWN"` **不会**阻止处理；正常进行所有其他检查。
+2. 然后，**始终**检查更改请求的审查反馈（审查级别正文）和未解决的内联审查线程，无论上面是否处理了关键操作。PR 可以同时具有 CI 失败和审查评论。
+3. 最后，确定终端状态：如果 CI 检查被取消/超时（没有失败），设置 `"ci_needs_attention"`。如果检查仍在待处理（没有失败或取消），设置 `"pending"`。如果一切都是绿色的（可合并，没有失败/取消的检查，没有请求的更改，没有未解决的线程），设置 `"healthy"`。如果根本没有匹配的分支，设置 `"error"`。
+4. 在每个单独的修复操作之前（解决冲突、修复 CI 检查、处理审查评论），检查此 PR 的每周期修复计数器。如果达到 3，跳过**代码更改**，但**不要**放弃 PR 或跳过剩余线程。所有剩余的审查线程仍必须评估。对于需要代码更改但上限阻止的线程，用实质性的技术描述回复需要什么更改，并注意将在下一个周期中处理。在每个成功的修复操作后递增计数器。
+5. 回复评论线程（问题/澄清或上限延迟的解释）不计入修复上限。
+
+**`last_status` 优先级**：当同一 PR 的多个部分匹配时（例如，冲突已解决，然后处理审查评论），每个部分可能设置 `last_status`。最后执行的部分获胜。上面定义的评估顺序确定优先级 — 审查相关状态优先于 CI/冲突状态，因为它们稍后运行。
+
+#### MERGED 或 CLOSED
+
+`state` 为 `"MERGED"` 或 `"CLOSED"`。
+
+通过在 JSON 输出中设置 `removed: true` 报告此 PR 已移除。父代理处理实际的状态文件更新。记录它被移除的原因。
+
+#### 可合并未知
+
+`mergeable` 为 `"UNKNOWN"`。GitHub 尚未计算可合并性。
+
+注意此状态但**不要阻止**。正常继续处理 PR — 检查 CI 失败、审查评论和其他可操作项。可合并性通常在推送或短暂延迟后自行解决。只有在处理期间未分配其他状态时（没有 CI 失败、没有审查评论、没有冲突），才将 `last_status` 设置为 `"mergeable_unknown"` 作为回退。
+
+#### 合并冲突
+
+`mergeable` 为 `"CONFLICTING"` 或 `mergeStateStatus` 为 `"DIRTY"`。
+
+在尝试任何其他修复之前首先解决冲突，因为冲突通常是 CI 失败的根本原因。每次冲突解决都算作一次修复操作 — 在尝试之前检查每周期计数器。
+
+**Graphite 管理的分支**（`stack_type` 为 `"graphite"`）：
+
+```bash
+gt checkout <branch>
+gt restack --no-interactive
+```
+
+如果 `gt restack` 遇到冲突：
+1. 从 restack 输出中识别冲突的文件。
+2. **完整**读取每个冲突的文件（不仅仅是冲突区域）。冲突标记看起来像：
+   ```
+   <<<<<<< HEAD
+   (父分支版本 -- 正在重新堆叠到的分支)
+   =======
+   (当前分支版本 -- 正在重放的提交)
+   >>>>>>> <commit-hash>
+   ```
+   `gt restack` 在内部执行变基，因此 `HEAD`（顶部部分）是**父**分支，底部部分是**当前**分支的更改。
+
+   解决策略：
+   - 读取标记之外的周围上下文以理解每一侧的意图。
+   - 如果双方添加了非重叠代码（例如，不同的函数、不同的导入），按逻辑顺序保留两个添加。
+   - 如果双方修改了相同的行，合并更改或在当前分支的版本代表预期的新行为时优先使用它。
+   - 删除**所有**冲突标记（`<<<<<<<`、`=======`、`>>>>>>>`）— 剩余的标记会破坏编译。
+   - 解决每个文件后，重新读取它以验证它在语法上有效并与代码库的其余部分在逻辑上一致。
+3. 暂存已解决的文件：
+   ```bash
+   git add <resolved_files>
+   ```
+4. 继续 restack：
+   ```bash
+   gt continue
+   ```
+5. 所有冲突解决且 restack 完成后，验证结果是否构建。为受影响的文件运行适当的构建/检查命令（例如，Rust 的 `cargo check`，Python 的 `python -m py_compile <file>`，TypeScript 的 `npx tsc --noEmit`）。如果构建失败，在提交之前修复问题 — 推送损坏的代码会触发 CI 失败，消耗另一个修复周期。
+
+Restack 后，提交整个堆栈：
+
+```bash
+gt submit --stack --no-edit --no-interactive
+```
+
+**GitHub 堆叠 PR**（`stack_type` 为 `"github"`）：
+
+```bash
+# 使用 PR 编号（而非分支名称）以确保堆栈在此工作树上下文中本地跟踪 —
+# 分支名称检出仅针对本地跟踪的堆栈解析，如果 add 步骤在不同的
+# 工作树中运行，则可能不存在。
+# 根据安全防护，在退出代码 8（堆栈被另一个进程锁定）时重试。
+gh stack checkout <number> || { EXIT=$?; if [ $EXIT -eq 8 ]; then sleep 2 && gh stack checkout <number>; fi; }
+gh stack rebase || { EXIT=$?; if [ $EXIT -eq 8 ]; then sleep 2 && gh stack rebase; fi; }
+```
+
+如果 `gh stack rebase` 遇到冲突：
+1. 变基暂停并打印带有行号的冲突文件。使用与上面 Graphite 冲突相同的策略解决它们（读取完整文件，理解双方，合并更改，删除标记）。
+2. 暂存已解决的文件：
+   ```bash
+   git add <resolved_files>
+   ```
+3. 继续变基：
+   ```bash
+   gh stack rebase --continue
+   ```
+4. 如果无法解决变基，中止并报告：
+   ```bash
+   gh stack rebase --abort
+   ```
+5. 所有冲突解决后，验证结果是否构建（与上面的 Graphite 部分相同）。
+
+变基后，推送整个堆栈：
+
+```bash
+gh stack push || { EXIT=$?; if [ $EXIT -eq 8 ]; then sleep 2 && gh stack push; fi; }
+```
+
+对于没有冲突的堆栈，`gh stack sync` 可以将单独的 rebase + push 步骤替换为单个命令（fetch + rebase + push + PR 状态同步）。但是，使用单独的命令可以更好地控制冲突处理，因此在可能存在冲突时优先使用显式流程。
+
+**纯 git 分支**（`stack_type` 为 `null` 或独立 PR）：
+
+```bash
+git checkout <branch>
+git rebase origin/<baseRefName>
+```
+
+如果变基遇到冲突：
+1. 从变基输出中识别冲突的文件。
+2. **完整**读取每个冲突的文件（不仅仅是冲突区域）。冲突标记看起来像：
+   ```
+   <<<<<<< HEAD
+   (基础分支版本 -- 在变基期间，HEAD 是正在变基到的分支)
+   =======
+   (PR 分支版本 -- 正在重放的提交)
+   >>>>>>> <commit-hash>
+   ```
+   **重要**：在 `git rebase` 期间，与 `git merge` 相比，两侧是交换的。`HEAD`（在 `=======` 上方）是*基础*分支的代码（例如，`origin/main`），底部部分是在其上重放的 PR 的传入更改。
+
+   解决策略：
+   - 读取标记之外的周围上下文以理解每一侧的意图。
+   - 如果双方添加了非重叠代码（例如，不同的函数、不同的导入），按逻辑顺序保留两个添加。
+   - 如果双方修改了相同的行，合并更改或在当前分支的版本代表预期的新行为时优先使用它。
+   - 删除**所有**冲突标记（`<<<<<<<`、`=======`、`>>>>>>>`）— 剩余的标记会破坏编译。
+   - 解决每个文件后，重新读取它以验证它在语法上有效并与代码库的其余部分在逻辑上一致。
+3. 暂存已解决的文件：
+   ```bash
+   git add <resolved_files>
+   ```
+4. 继续变基：
+   ```bash
+   git rebase --continue
+   ```
+5. 所有冲突解决且变基完成后，验证结果是否构建（与上面的 Graphite 部分相同）。
+
+解决后，推送：
+
+```bash
+git push --force-with-lease
+```
+
+发布摘要评论：
+
+```bash
+gh pr comment <number> --body "自动修复：已解决合并冲突并变基。"
+```
+
+设置 `last_status` 为 `"conflicts"`。递增此 PR 的每周期修复计数器。
+
+#### CI 失败
+
+`statusCheckRollup` 包含一个或多个 `conclusion` 为 `"FAILURE"` 或 `"ERROR"` 的检查。
+
+对于每个失败的检查，修复算作一次修复操作 — 在尝试每个之前检查每周期计数器。
+
+1. 列出带有其运行 ID 的失败检查：
+   ```bash
+   gh pr checks <number> --json name,state,link
+   ```
+   从 `link` 字段 URL 中提取运行 ID。URL 格式为 `https://github.com/<owner>/<repo>/actions/runs/<run_id>/...` — 从中解析 `<run_id>`。或者：
+   ```bash
+   gh run list --branch <headRefName> --json databaseId,name,conclusion \
+     --jq '.[] | select(.conclusion == "failure")'
+   ```
+
+2. 对于每个失败的检查，读取日志：
+   ```bash
+   gh run view <run_id> --log-failed 2>/dev/null | tail -100
+   ```
+
+3. 检出分支（工作树初始化获取确保引用是最新的）：
+   ```bash
+   git checkout <headRefName>
+   git rebase origin/<headRefName>
+   ```
+
+4. 从日志中诊断失败。读取相关源文件。
+
+5. 修复代码。
+
+6. 提交并推送：
+   ```bash
+   git add -A && git commit -m "fix: address CI failure in <check_name>"
+   ```
+   如果是 graphite 管理的（`stack_type: "graphite"`）：
+   ```bash
+   gt submit --stack --no-edit --no-interactive
+   ```
+   如果是 GitHub 堆叠 PR（`stack_type: "github"`）：
+   ```bash
+   gh stack push || { EXIT=$?; if [ $EXIT -eq 8 ]; then sleep 2 && gh stack push; fi; }
+   ```
+   如果是纯 git（`stack_type: null`）：
+   ```bash
+   git push
+   ```
+
+发布摘要评论：
+
+```bash
+gh pr comment <number> --body "自动修复：已解决 <check_name> 中的 CI 失败。"
+```
+
+设置 `last_status` 为 `"ci_failed"`。在每个单独的检查修复后递增此 PR 的每周期修复计数器。
+
+#### 更改请求
+
+`reviewDecision` 为 `"CHANGES_REQUESTED"`。
+
+本节仅处理**审查级别正文**（审查者在请求更改时编写的顶级摘要）。单独的内联评论线程在下面的"未解决的审查评论"中单独处理，以避免重复处理。
+
+在继续之前检查每周期修复计数器。如果已达到 3，**不要**悄悄跳过。发布一条通用 PR 评论，说明已评估审查级别反馈，但此周期的修复上限已达到，包括需要更改的实质性技术摘要，并注意将在下一个周期中处理：
+
+```bash
+gh pr comment <number> --body "此周期已达修复上限。审查级别反馈已评估但尚未处理：<所需更改的详细技术摘要>。这将在下一个检查周期中处理。"
+```
+
+此评论不计入修复上限。然后转到下一部分。
+
+1. 获取审查：
+   ```bash
+   NO_COLOR=1 gh api repos/{OWNER}/{REPO}/pulls/{number}/reviews \
+     --jq '.[] | select(.state == "CHANGES_REQUESTED")'
+   ```
+
+2. 读取审查正文文本（而不是单独的内联评论 — 这些由"未解决的审查评论"部分处理）。如果审查正文包含尚未被内联线程覆盖的可操作高级反馈，则处理它。
+
+3. 检出分支，在代码中处理审查正文反馈。
+
+4. 使用描述性消息提交并推送：
+   ```bash
+   git add -A && git commit -m "fix: address review feedback"
+   ```
+   如果是 graphite 管理的（`stack_type: "graphite"`）：
+   ```bash
+   gt submit --stack --no-edit --no-interactive
+   ```
+   如果是 GitHub 堆叠 PR（`stack_type: "github"`）：
+   ```bash
+   gh stack push || { EXIT=$?; if [ $EXIT -eq 8 ]; then sleep 2 && gh stack push; fi; }
+   ```
+   如果是纯 git（`stack_type: null`）：
+   ```bash
+   git push
+   ```
+
+发布摘要评论：
+
+```bash
+gh pr comment <number> --body "自动修复：已处理审查反馈。"
+```
+
+如果审查正文包含已处理的可操作反馈，设置 `last_status` 为 `"changes_requested"` 并递增每周期修复计数器。如果审查正文为空或不包含内联线程涵盖之外的可操作反馈，则 `last_status` 保持不变。
+
+#### 未解决的审查评论（始终检查）
+
+**始终运行此检查**，即使之前的分支（CI、冲突、更改请求）已经匹配。PR 可以同时具有 CI 失败和未解决的审查线程。仅在 PR 已 MERGED/CLOSED（已移除）时跳过此项。**每个未解决的线程都必须评估并采取行动。不要出于任何原因悄悄跳过任何线程。**
+
+1. 获取审查线程。**重要**：即使通过管道传输，`gh api graphql` 也会将 ANSI 转义码注入其输出。在解析 JSON 之前，设置 `NO_COLOR=1` 并使用 `sed` 删除剩余的转义。使用 `mktemp` 作为输出文件，以避免并发调用之间的竞争。
+   ```bash
+   THREADS_FILE=$(mktemp /tmp/pr_review_threads.XXXXXX.json)
+   CURSOR=""
+   ALL_THREADS="[]"
+   while true; do
+     AFTER_ARG=""
+     if [ -n "$CURSOR" ]; then
+       AFTER_ARG="-f cursor=$CURSOR"
+     fi
+     PAGE=$(NO_COLOR=1 gh api graphql -f owner="<OWNER>" -f name="<REPO>" -F number=<number> $AFTER_ARG -f query='
+     query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
+       repository(owner: $owner, name: $name) {
+         pullRequest(number: $number) {
+           reviewThreads(first: 50, after: $cursor) {
+             pageInfo { hasNextPage endCursor }
+             nodes {
+               isResolved
+               comments(first: 10) {
+                 nodes {
+                   author { login }
+                   path
+                   line
+                   body
+                   databaseId
+                   url
+                 }
+               }
+             }
+           }
+         }
+       }
+     }' | sed 's/\x1b\[[0-9;]*m//g')
+     PAGE_NODES=$(echo "$PAGE" | jq '.data.repository.pullRequest.reviewThreads.nodes')
+     ALL_THREADS=$(echo "$ALL_THREADS" "$PAGE_NODES" | jq -s '.[0] + .[1]')
+     HAS_NEXT=$(echo "$PAGE" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage')
+     if [ "$HAS_NEXT" != "true" ]; then
+       break
+     fi
+     CURSOR=$(echo "$PAGE" | jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor')
+   done
+   echo "$ALL_THREADS" > "$THREADS_FILE"
+   ```
+
+   分页循环获取所有审查线程，而不仅仅是前 50 个。这是满足必须处理每个线程的要求所必需的。
+
+2. 过滤到未解决的线程（`isResolved == false`）。
+
+3. 处理**每个**未解决的线程。即使已达到修复上限，也不得跳过任何线程。每个需要代码更改的线程都算作一次修复操作 — 在每次之前检查每周期计数器。对于每个线程：
+
+   **如果代码更改合理且尚未达到修复上限**（评论指出错误、请求重构、建议改进或其他可操作的内容）：
+   - 检出分支，进行代码更改，然后提交并推送：
+     ```bash
+     git add -A && git commit -m "fix: address review comment on <path>"
+     ```
+     如果是 graphite 管理的（`stack_type: "graphite"`）：
+     ```bash
+     gt submit --stack --no-edit --no-interactive
+     ```
+     如果是 GitHub 堆叠 PR（`stack_type: "github"`）：
+     ```bash
+     gh stack push || { EXIT=$?; if [ $EXIT -eq 8 ]; then sleep 2 && gh stack push; fi; }
+     ```
+     如果是纯 git（`stack_type: null`）：
+     ```bash
+     git push
+     ```
+   - **在**修复推送后，回复线程引用提交 SHA：
+     ```bash
+     COMMIT_SHA=$(git rev-parse HEAD)
+     NO_COLOR=1 gh api repos/{OWNER}/{REPO}/pulls/{number}/comments/{databaseId}/replies \
+       -X POST -f body="已在 ${COMMIT_SHA} 中处理：<更改内容的简要描述>"
+     ```
+   - **永远不要**在修复推送之前回复。回复必须引用已经包含修复的提交。
+   - 递增此 PR 的每周期修复计数器。
+
+   **如果代码更改合理但已达到修复上限**（计数器为 3）：
+   - **不要**进行代码更改。**不要**跳过线程。
+   - 用**实质性技术描述**回复需要什么更改、受影响的文件和行，以及为什么需要更改。注意此周期的修复上限已达到，更改将在下一个周期中应用。
+     ```bash
+     NO_COLOR=1 gh api repos/{OWNER}/{REPO}/pulls/{number}/comments/{databaseId}/replies \
+       -X POST -f body="此周期已达修复上限。所需的更改：<更改内容和原因的详细技术描述>。这将在下一个检查周期中处理。"
+     ```
+   - 此回复是实质性技术解释（而非单纯确认），不计入修复上限。
+
+   **如果评论是真正的问题、讨论点或超出范围**（当前代码是正确的、建议超出范围，或评论要求澄清）：
+   - 使用来自 GraphQL 响应的**数字** `databaseId`（而非不透明的节点 ID）用**实质性**解释回复。解释*为什么*当前代码是正确的、*为什么*建议超出范围，或提供带有技术细节的所请求的澄清。
+     ```bash
+     NO_COLOR=1 gh api repos/{OWNER}/{REPO}/pulls/{number}/comments/{databaseId}/replies \
+       -X POST -f body="<实质性解释>"
+     ```
+
+   **永远不要**用"将修复"、"已确认"、"Acked"、"已注意"、"好点子"、"好的后续"、"有道理"、"感谢反馈"或任何仅仅确认评论或将修复推迟到后续 PR 的回复来回复。如果评论指出合理的问题，**现在**在此周期中修复它 — 不要推迟到后续。每个回复都必须引用已经进行修复的提交 SHA，或提供为什么不需要代码更改的详细技术解释。
+
+   **Semgrep 发现**：当驳回作为误报或不可操作的 `semgrep-code-scan` 发现时，使用适当的命令回复：`/fp <comment>` 表示误报，`/ar <comment>` 表示可接受风险，或 `/other <comment>` 表示所有其他原因。
+
+4. 处理完所有线程后，清理临时文件：
+   ```bash
+   rm -f "$THREADS_FILE"
+   ```
+
+如果发现并处理了任何未解决的线程（代码更改或实质性回复），设置 `last_status` 为 `"review_comments"`。如果上面的过滤发现零个未解决的线程，则 `last_status` 保持与任何早期部分相同。
+
+#### 取消/超时的 CI 检查
+
+`statusCheckRollup` 包含一个或多个 `conclusion` 为 `"CANCELLED"`、`"TIMED_OUT"`、`"STARTUP_FAILURE"` 或 `"STALE"` 的检查，且没有检查的 `conclusion` 为 `"FAILURE"` 或 `"ERROR"`。
+
+设置 `last_status` 为 `"ci_needs_attention"` 并跳过。不要尝试修复 — 这些检查需要手动重新触发或调查。
+
+#### 检查待处理
+
+`statusCheckRollup` 中的任何检查的 `status` 为 `"IN_PROGRESS"` 或 `"QUEUED"`，且没有检查失败或被取消。
+
+设置 `last_status` 为 `"pending"`。**不要**让待处理的 CI 阻止对已识别问题的操作 — 即使检查正在进行中，仍必须处理审查评论、先前运行中的已知失败和其他可操作项。
+
+#### 全部正常
+
+验证以下所有条件是否为真：
+- `mergeable` 为 `"MERGEABLE"`（而不是 `"CONFLICTING"` 或 `"UNKNOWN"`）
+- 没有检查的 `conclusion` 为 `"FAILURE"`、`"ERROR"`、`"CANCELLED"`、`"TIMED_OUT"`、`"STARTUP_FAILURE"` 或 `"STALE"`
+- `reviewDecision` 不是 `"CHANGES_REQUESTED"`
+- 不存在未解决的审查线程（由上面的审查评论检查确认）
+
+如果满足所有条件，更新 `last_status` 为 `"healthy"`。无需操作。
+
+如果上述决策分支都不匹配（意外的 API 状态），设置 `last_status` 为 `"error"` 并记录带有原始 PR 状态的警告以进行调试。
+
+### 步骤 6：更新状态文件
+
+使用每个处理的 PR 的新值写入更新的状态文件，包括 `last_checked`、`last_status`、`check_count` 和 `fix_count`。还要持久化更新的 `groups` 映射，其中包含每个组的当前 `subagent_id` 和 `worktree_path` 值。在工作树清理之前持久化状态，以便清理期间的崩溃不会丢失周期结果。
+
+### 步骤 7：工作树清理（保守）
+
+工作树在周期之间持久存在以进行子代理恢复。**不要**在周期之间激进地清理工作树。
+
+只有在**组中的所有 PR 都已移除**（合并、关闭或从观察列表中显式移除）或用户明确请求清理时才清理工作树。使用 `grok worktree rm`（而非 `git worktree remove`）：
+
+```bash
+grok worktree rm --force <worktree_path>
+```
+
+`<worktree_path>` 来自状态文件中的 `groups[group_key].worktree_path`。移除工作树后，还要从状态文件中删除 `groups[group_key]` 条目并重新持久化状态。
+
+注意：`grok worktree rm` 是首选的清理命令。如果 `spawn_subagent` 将来获得自己的工作树清理机制，则优先使用它以避免与工具内部跟踪的不一致。
+
+### 步骤 8：如果为空则自我终止
+
+状态持久化和工作树清理完成后：如果在此周期中移除了此仓库的所有 PR（合并/关闭），调用 `scheduler_list`。如果任何计划任务的提示包含 `pr-babysit`，则使用该任务的 ID 调用 `scheduler_delete` 以自我终止循环。报告并退出。
+
+## 安全防护
+
+严格遵循这些规则：
+
+- **永远不要在没有 `--force-with-lease` 的情况下强制推送**。始终使用 `git push --force-with-lease`，永远不要使用 `git push --force`。注意：`gh stack push` 和 `gt submit` 在内部处理 `--force-with-lease`，因此使用这些命令时不需要额外的标志。
+- **永远不要修改 PR 分支之外的文件**。在进行更改之前始终验证您在正确的分支上。
+- **所有修复工作都在工作树中进行，永远不在主工作区中进行。** 在检查周期中不得修改主工作区树。每个非重叠组通过 `spawn_subagent` 上的 `isolation: "worktree"` 获得自己的工作树。
+- **工作树在周期之间持久存在以进行子代理恢复。** 除非移除组中的所有 PR，否则不要清理工作树。使用 `grok worktree rm --force <path>` 进行清理，而不是 `git worktree remove`。
+- **每个周期每个 PR 的修复尝试上限为 3 次**。在内存中跟踪每周期计数器。在周期开始时为每个 PR 初始化为 0。在每个单独的修复操作后递增（每个 CI 检查修复、每个冲突解决、每个已处理的审查线程）。当达到 3 时，跳过进一步的**代码更改**，但继续评估剩余的审查线程。对于被上限阻止的线程，用所需更改的实质性技术描述回复，并注意将在下一个周期中处理。
+- **永远不要跳过或忽略审查评论。** 必须评估每个未解决的线程，并用代码更改处理或用实质性回复响应。悄悄跳过线程是永远不可接受的。
+- **永远不要用"将修复"、"已确认"、"acked"、"好的后续"或类似的陈词滥调回复审查评论。** 如果评论需要代码更改，**现在**进行更改 — 不要推迟到后续 PR 或未来周期。先进行修复，然后回复引用提交。如果评论是问题，提供实质性答案。空的确认和延迟的修复永远不可接受。
+- **如果修复尝试失败**，记录错误并继续下一个 PR。不要在同一周期内重试。
+- **在提交之前始终使用 `git add -A`** 以确保包含新文件。
+- **如果状态文件损坏或不可读**，从 `{"instance_id": "<INSTANCE_ID>", "prs": [], "groups": {}}` 重新开始。记录状态已重置。
+- **永远不要合并 PR**。保姆修复问题但不合并。合并是人类的决定。
+- **Graphite 操作可能在并行工作树之间竞争。** 所有工作树共享单个 `.git` 目录，`gt` 在共享的 git refs/config 中存储元数据。如果多个子代理在不同堆栈上同时运行 `gt restack` 或 `gt submit`，它们可能会损坏 graphite 的内部状态。缓解措施：如果 `gt` 命令因意外错误而失败，在 2 秒暂停后重试一次。如果在实践中观察到 graphite 竞争问题，回退到按顺序处理 graphite 堆栈（仅并行化独立 PR）。
+- **GitHub 堆叠 PR（`gh stack`）使用显式锁定**（退出代码 8："堆栈被另一个进程锁定"）。所有工作树共享相同的 `.git` 目录，`gh stack` 在 `.git/gh-stack` 中存储状态，因此来自不同工作树的并发 `gh stack` 操作将遇到锁争用 — 即使在不同的堆栈上操作。缓解措施：如果 `gh stack` 命令因退出代码 8（锁定）而失败，在 2 秒暂停后重试一次。如果锁争用频繁，回退到按顺序处理 GitHub 堆栈（与上面的 Graphite 相同的指导）。如果未安装 `gh stack`，回退到 GitHub 风格堆叠 PR 的纯 git 操作。
+- **跨机器堆栈检测**：当 PR 在不同机器上使用 Graphite 或 `gh stack` 创建时，本地 CLI 元数据可能不存在。基于 API 的链检测（步骤 3 中的方法 A）是主要检测机制，无论本地工具状态如何都有效。工具特定方法（B 和 C）用于确定操作的正确 CLI，如果两个工具都不可用，则回退到纯 git。
+- **GitHub 堆叠 PR 不支持跨分支堆栈。** GitHub 堆栈中的所有分支必须在同一仓库中。这不太可能被触及，因为保姆在单个仓库内运行，但在检测期间要注意此约束。
+- **在使用 `gh api` 时设置 `NO_COLOR=1`** 以避免 ANSI 转义码。
+
+---
+
+## 堆栈检测
+
+在 `add` 步骤中为每个 PR 检测堆栈元数据（`stack_id`、`stack_type`、`stack_position`）。使用分层方法：首先尝试 API 链检测（方法 A），然后尝试 Graphite（方法 B），最后尝试 GitHub 堆栈（方法 C）。如果所有方法都不声称 PR 属于堆栈，则将其视为独立 PR（`stack_id: null`、`stack_type: null`、`stack_position: 0`）。
+
+### 方法 A：GitHub API 链检测（所有堆栈通用）
+
+此方法适用于所有堆栈类型（Graphite、GitHub 堆栈或纯 git 链）。它识别 PR 是否是堆栈的一部分，但不确定使用哪个 CLI 工具 — 方法 B/C 或运行时回退处理该问题。
+
+1. 查询 PR 的基础和头部分支：
+   ```bash
+   gh pr view <number> --json baseRefName,headRefName
+   ```
+
+2. 检查基础分支是否也是开放 PR 的头部（指示堆栈）：
+   ```bash
+   gh pr list --json number,headRefName,state \
+     --jq '.[] | select(.headRefName == "<baseRefName>" and .state == "OPEN")'
+   ```
+
+3. 如果找到匹配项，此 PR 是堆栈的一部分。递归遍历链以构建完整堆栈。
+
+4. 分配 `stack_id`（使用链中最低 PR 编号，例如 `"stack-123"`）和 `stack_position`（从底部的 0 开始）。将 `stack_type` 保留为 `null` — 方法 B/C 将填充它。
+
+### 方法 B：Graphite CLI 检测
+
+仅在方法 A 未声称堆栈时运行（未找到链）或方法 A 找到链但 `stack_type` 仍为 `null` 时运行。
+
+1. 验证 Graphite 是否已安装：
+   ```bash
+   which gt
+   ```
+
+2. 尝试跟踪分支：
+   ```bash
+   gt track <headRefName>
+   ```
+
+跟踪后，使用 `gt bottom` / `gt up` 验证如上。如果行走成功并匹配 API 检测到的链，设置 `stack_type: "graphite"`。
+
+如果 graphite 跟踪仍然失败（例如，`gt track` 拒绝分支，仓库未初始化），继续执行方法 C。
+
+### 方法 C：GitHub 堆叠 PR 检测
+
+仅在方法 B 未声称堆栈时运行（graphite 不可用或跟踪失败）。
+
+**注意**：GitHub 堆叠 PR（`gh stack`）目前处于私有预览阶段。如果仓库未启用该功能，即使安装了扩展，`gh stack` 命令也会失败。在这种情况下，方法 C 失败，堆栈被视为纯 git 链。
+
+如果所有三种方法都未声称 PR 是堆栈的一部分，将其视为独立 PR（`stack_id: null`、`stack_type: null`、`stack_position: 0`）。
+
+## Review 技能完整流程
+
+### 本地模式
+
+1. 检测更改：
+   ```bash
+   git status --porcelain
+   ```
+   如果输出为空，打印"无本地更改需审查（工作树干净）。"直接跳到步骤 4（清理 — 使用本地/分支子情况；`<diff_file>` 和辅助文件列表都将是无操作 `rm -f`，因为两者都尚未写入）然后步骤 5（最终报告）。最终报告应使用"本地/分支（空差异退出）"要点。不要启动审查者。
+
+2. 构建统一差异，涵盖暂存 + 未暂存跟踪的更改和未跟踪的文件：
+   ```bash
+   # 暂存 + 未暂存跟踪的更改（包括删除和修改）。
+   # 防范没有提交的新 `git init` 仓库 -- `git diff HEAD`
+   # 在那里失败，出现"模糊参数 'HEAD'"。在这种情况下，保留跟踪更改部分为空，
+   # 让未跟踪循环填充文件。
+   # `core.quotepath=false` 保持非 ASCII / 带空格的路径不带引号，以便
+   # 步骤 3 PR 模式中的解析器看到字面路径。
+   if git rev-parse --verify --quiet HEAD >/dev/null; then
+       git -c core.quotepath=false diff HEAD > "${diff_file}"
+   else
+       : > "${diff_file}"
+   fi
+
+   # 将每个未跟踪的文件附加为添加文件差异（跳过忽略的文件）
+   git ls-files --others --exclude-standard -z | while IFS= read -r -d '' f; do
+       git -c core.quotepath=false diff --no-index -- /dev/null "$f" >> "${diff_file}" || true
+   done
+
+   # 大小检查：打印字节计数，以便编排器可以控制继续。
+   # 请参阅下面的可执行大小检查处理。
+   wc -c "${diff_file}"
+   ```
+
+   **大小门限（编排器端）**：读取 `wc -c` 发出的字节计数并采取行动：
+   - **> 10 MB**：中止并显示错误，告诉用户将有问题的路径添加到 `.gitignore`（指向 `git status --porcelain` 加上 `du -sh` 以查找最严重的问题 — 典型的罪魁祸首是未跟踪的 `node_modules/`、`.cache/`、`target/` 或流浪的数据集）。不要启动审查者；运行清理并停止。
+   - **> 1 MB**：在继续之前要求用户确认（如果可用，使用适当的 ask/question 工具）。拒绝时，运行清理并停止。审查者子代理有上下文限制，多 MB 差异会使其饱和。
+   - **否则**：默默继续。
+
+3. 捕获已更改文件列表：
+   ```bash
+   {
+       if git rev-parse --verify --quiet HEAD >/dev/null; then
+           git -c core.quotepath=false diff --name-only HEAD
+       fi
+       git ls-files --others --exclude-standard
+   } | sort -u > /tmp/grok-review-files-${REVIEW_ID}.txt
+   ```
+   将其读入 `changed_files`。
+
+### 分支模式
+
+1. 确定基础分支。按顺序尝试：
+   ```bash
+   if git rev-parse --verify --quiet origin/main >/dev/null; then
+       BASE=origin/main
+   elif git rev-parse --verify --quiet origin/master >/dev/null; then
+       BASE=origin/master
+   else
+       BASE=""
+   fi
+   ```
+   如果 `BASE` 为空（两个引用都不存在），询问用户要与哪个基础引用进行比较（如果可用，使用适当的 ask/question 工具）（提供您可以通过 `git symbolic-ref refs/remotes/origin/HEAD` 检测到的本地默认分支名称，加上"其他"选项）。
+
+2. 验证目标分支是否存在：
+   ```bash
+   git rev-parse --verify --quiet "${target}" || git rev-parse --verify --quiet "origin/${target}"
+   ```
+   如果两者都无法解析，报告错误并停止。
+
+3. 计算合并基础并收集差异：
+   ```bash
+   MERGE_BASE=$(git merge-base "${BASE}" "${target}")
+   git -c core.quotepath=false diff "${MERGE_BASE}".."${target}" > "${diff_file}"
+   git -c core.quotepath=false diff --name-only "${MERGE_BASE}".."${target}" > /tmp/grok-review-files-${REVIEW_ID}.txt
+   ```
+
+4. **空差异处理**：如果 `${diff_file}` 为空（或仅包含空格），打印"分支 `${target}` 与 `${BASE}` 相比没有更改。"直接跳到步骤 4（清理 — 使用本地/分支子情况）然后步骤 5（最终报告）。最终报告应使用"本地/分支（空差异退出）"要点，注意分支与其基础相比没有更改。不要启动审查者。
+
+   从名称文件读取 `changed_files`。
+
+### PR 模式
+
+1. 验证 `gh` 身份验证：
+   ```bash
+   gh auth status
+   ```
+   如果退出非零，警告用户没有 `gh` 身份验证无法获取 PR，然后停止并说明运行 `gh auth login`。
+
+2. 在单次往返中获取 PR 元数据：
+   ```bash
+   gh pr view "${target}" --json number,title,body,headRefOid,baseRefOid,headRefName,baseRefName,url,headRepository,headRepositoryOwner,isCrossRepository,files \
+       > /tmp/grok-review-prmeta-${REVIEW_ID}.json
+   ```
+
+   解析 JSON 并填充：
+   - `pr_number` 来自 `.number`
+   - `pr_title` 来自 `.title`
+   - `pr_url` 来自 `.url`
+   - `head_sha` 来自 `.headRefOid`
+   - `base_sha` 来自 `.baseRefOid`
+   - `owner`、`repo` — 使用正则表达式 `^https?://github\.com/(?P<owner>[^/]+)/(?P<repo>[^/]+)/pull/\d+` 从 `pr_url` 解析
+   - `changed_files` — 通过 `jq -r '.files[].path' /tmp/grok-review-prmeta-${REVIEW_ID}.json > /tmp/grok-review-files-${REVIEW_ID}.txt` 提取，然后读取文件
+
+   **验证**所有必需字段都非空：`pr_number`、`head_sha`、`base_sha`、`owner`、`repo`。如果任何缺失或为空，向用户显示解析的 JSON 并停止 — 不要继续使用 `null` 字段构建有效负载。
+
+3. 获取差异：
+   ```bash
+   gh pr diff "${target}" > "${diff_file}"
+   ```
+
+4. **空差异处理**：如果 `${diff_file}` 为空，打印"PR #${pr_number} 没有更改。"直接跳到步骤 4（清理 — 使用"PR 模式，无审查者输出"子情况，它删除 `<diff_file>`、prmeta JSON、文件列表，并且对 `<review_file>` / `<pending_review_payload>` 是无操作，因为两者都未写入）然后步骤 5（最终报告）。最终报告应使用"PR（空差异退出）"要点，注意 PR 没有更改。不要启动审查者。
+
+步骤 1 之后，报告进度："已为 <mode> 目标 <summary> 收集差异。正在启动审查者..."
+
+## 步骤 2：启动审查者子代理
+
+通过调用 `spawn_subagent` 启动单个审查者子代理。在产生任何"审查者正在启动"叙述之前发出 `spawn_subagent` 工具调用；启动后的进度消息（"审查完成。正在处理发现..."）属于稍后的助手消息，在工具结果到手之后。
+
+`spawn_subagent` 参数：
+
+- `subagent_type`：`"general-purpose"`
+- `description`：`"审查：<mode> <target-summary>"`（例如，`"审查：pr #4221"` 或 `"审查：分支 feature/foo"` 或 `"审查：本地更改"`）
+
+使用特定于模式的上下文构建提示。**在提示前添加审查者角色指令**（在设置期间加载）。使用此模板：
+
+```
+<reviewer_persona_instructions>
+
+---
+
+您正在审查代码更改。模式：<mode>。
+
+目标：<target-summary-line>
+<如果是 PR 模式：PR URL：<pr_url>>
+<如果是 PR 模式：head SHA：<head_sha>，base SHA：<base_sha>>
+<如果是分支模式：base：<BASE>，merge-base：<MERGE_BASE>，head：<target>>
+
+统一差异位于：<diff_file>
+已更改文件列表位于：/tmp/grok-review-files-${REVIEW_ID}.txt
+
+首先阅读差异以了解范围。仅差异通常不足以提供
+上下文，因此您还应该 `read_file` 差异中引用的源文件，
+以了解调用站点、类型和周围逻辑，然后再标记问题。
+
+将您的结构化发现写入：<review_file>
+
+格式：
+
+## 摘要
+
+<2 到 4 句话的整体评估更改 — 它们做什么，它们是否
+看起来正确，主要风险区域。这位于文件的最顶部，
+在任何单独问题之前。>
+
+## 问题
+
+### 问题 1 -- 严重性：bug
+- 文件：path/to/file.ext:LINE
+- 描述：<有什么问题>
+- 建议：<如何修复>
+- 状态：open
+
+### 问题 2 -- 严重性：suggestion
+- 文件：path/to/file.ext:LINE
+- 描述：...
+- 建议：...
+- 状态：open
+
+严重性必须是以下之一：bug、suggestion、nit。每个问题的状态字段必须设置为"open"（如上面示例所示）。
+
+<如果是 PR 模式，逐字包含此段落：>
+重要：对于每个问题，文件行必须引用差异右侧的单行号（新/更改后文件中的行号，
+而不是更改前的文件）。如果发现跨越一个范围，请选择右侧最具代表性的
+单行。此要求是强制性的，因为编排器将把这些发现作为内联评论发布到 GitHub PR 上，
+GitHub API 拒绝不针对差异中存在的行的评论。
+<结束 if>
+
+如果差异确实没问题并且您没有问题，请编写摘要和一个
+空的 `## 问题` 部分（或完全省略问题部分）。不要为了填充空间而编造问题。
+```
+
+等待子代理完成。如果失败，向用户报告错误并停止。
+
+完成后，验证 `<review_file>` 存在且非空。如果不存在，报告错误并停止。
+
+保存返回的 `subagent_id` 用于报告。审查者不会恢复；这是一次性审查。
+
+报告进度："审查完成。正在处理发现..."
+
+## 步骤 3：根据模式处理输出
+
+本地/分支模式（将摘要写入磁盘）和 PR 模式（将待定审查发布到 GitHub）之间的后处理不同。
+
+### 本地/分支模式
+
+1. 通过 `read_file` 读取 `<review_file>`。
+2. 通过计算与正则表达式 `^### Issue \d+ -- Severity: (bug|suggestion|nit)$` 匹配的标题行来计算问题数量，并按捕获的严重性对它们进行分桶。标题与此模式不匹配的问题（拼写错误的严重性、缺少严重性字段、格式错误的标题）是格式错误的 — 向用户记录一行警告，列出标题行并将它们视为未计数。不要尝试重新解析正文以查找 `Severity:` 字段；标题是规范来源。相同的正则表达式控制下面步骤 3 PR 模式中的解析。
+3. 计算差异统计：
+   ```bash
+   git diff --shortstat ...     # 本地：HEAD；分支：MERGE_BASE..target
+   ```
+   对于本地模式，运行 `git diff --shortstat HEAD` 并单独计算未跟踪的文件。对于分支模式，运行 `git diff --shortstat "${MERGE_BASE}".."${target}"`。
+
+4. 使用 `write` 工具创建 `<summary_file>`，结构如下：
+   ```markdown
+   # 审查摘要
+
+   - **模式**：<mode>
+   - **目标**：<target-summary>
+   - **已审查文件**：<count>（<列表，如果更长则截断为 10>）
+   - **差异统计**：<shortstat-line>
+   - **问题计数**：<X> 个 bug，<Y> 个建议，<Z> 个 nit
+
+   ## 主要问题
+
+   <前 5 个问题标题，每行一个，格式为"[严重性] 文件:行 -- 描述（截断为 ~100 字符）">
+
+   查看完整审查：<review_file>
+   ```
+
+5. 打印给用户：
+   - 内联问题计数以及 `<review_file>` 和 `<summary_file>` 的文件路径。
+
+在本地/分支模式下不要删除 `<review_file>` 或 `<summary_file>` — 这些文件是可交付成果。
+
+### PR 模式
+
+1. 通过 `read_file` 读取 `<review_file>` 并将其解析为结构化表示：
+   - 提取 `## 摘要` 部分 — `## 摘要` 标题之后和下一个 `## ` 标题之前的所有内容。
+   - 通过将标题行与 `^### Issue \d+ -- Severity: (bug|suggestion|nit)$` 匹配来提取每个问题（与步骤 3 本地/分支模式相同的正则表达式）。对于每个匹配的块，捕获：
+     - `severity` — 标题正则表达式中捕获的组
+     - `file` 和 `line` — 从 `- File: path:line` 字段解析。如果缺少 `:line`，该问题无法成为内联评论；它必须提升到正文。
+     - `description` — 来自 `- Description:` 字段
+     - `suggestion` — 来自 `- Suggestion:` 字段（可能为空）
+
+   **零问题时提前退出**：如果解析的问题列表为空，不要遍历差异，不要构建有效负载，不要向 GitHub 发布任何内容。发布空的 PENDING 审查是浪费的，在 PR 上看起来像垃圾邮件，并为用户提供一个"提交您的审查"提醒，用于一个没有任何内容的审查。相反：
+   - 打印："审查者在 PR #${pr_number} 上未发现问题。未创建 PENDING 审查。"
+   - 直接跳到步骤 4（清理）然后步骤 5（最终报告）。最终报告应注意未发布 PENDING 审查。
+
+2. 通过 `read_file` 读取 `<diff_file>` 并遍历它以确定差异右侧存在哪些 `(file, line)` 对。当以下情况时，该行在右侧：
+   - 它是添加的行（前缀 `+`，但不是 `+++ b/...` 标题行），或
+   - 它是上下文行（前缀 ` `）。
+
+   逐文件遍历差异：
+   - 每个文件部分以 `+++ b/<path>` 开头（将 `+++ /dev/null` 视为删除 — 跳过）。
+   - 在文件内，每个块以 `@@ -<old>[,<oldcount>] +<new>[,<newcount>] @@` 开头。`,<count>` 部分是可选的，省略时默认为 `1`（因此 `@@ -42 +42 @@` 是 `git diff` 和 `gh pr diff` 都发出的有效单行块）。像 `^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@` 这样的正则表达式匹配两种形式；从第二组捕获 `<new>`。将右侧行计数器重置为 `<new>`。
+   - 遍历块正文。对于 ` `（上下文）和 `+` 行（不包括 `+++` 标题），记录当前右侧行并递增计数器。对于 `-` 行（不包括 `---` 标题），不递增右侧计数器。
+   - 以 `\ ` 开头的行（字面反斜杠后跟空格）是差异元数据，而不是文件内容 — 例如，`\ No newline at end of file`。跳过它们：不递增右侧计数器，也不贡献 `(file, line)` 对。
+
+   构建 `(file, line)` 对的集合。
+
+3. 将解析的问题分为两组：
+   - **内联评论**：`(file, line)` 在差异集合中的问题。
+   - **提升到正文**：`(file, line)` 缺失或不在差异集合中的问题。
+
+4. 通过 `write` 工具构建 JSON 有效负载，保存到 `<pending_review_payload>`：
+
+   ```json
+   {
+     "commit_id": "<head_sha>",
+     "body": "<组装的正文，见下文>",
+     "comments": [
+       {
+         "path": "src/foo.rs",
+         "line": 42,
+         "side": "RIGHT",
+         "body": "**[bug]** 描述文本\n\n**建议：** 建议文本"
+       }
+     ]
+   }
+   ```
+
+   **不要包含 `event` 字段。** 省略 `event` 会导致 GitHub API 在 PENDING 状态下创建审查，这正是我们想要的 — 用户通过 GitHub UI 审查并提交它。
+
+   顶级 `body` 构造为：
+
+   ```
+   ## 摘要
+
+   <review_file 中 ## 摘要部分的逐字文本>
+
+   ## 按严重性划分的问题计数
+
+   - bug：<X>
+   - 建议：<Y>
+   - nit：<Z>
+
+   <如果存在任何提升的问题，附加：>
+   ## 差异之外的问题
+
+   这些发现引用了差异中不存在的行，无法作为内联评论发布：
+
+   - **[严重性]** 文件:行 -- 描述
+     - **建议：** 建议文本
+   <为每个提升的问题重复>
+   <结束 if>
+   ```
+
+   每个内联评论正文的形式为 `**[严重性]** 描述\n\n**建议：** 建议`。如果建议为空，删除建议行。
+
+   **将有效负载构造为 Python dict，然后通过 `json.dumps` 序列化。** 不要手工连接 JSON 字符串：审查文本通常包含 `"`、`\` 或嵌入的换行符，天真的连接会产生无效的 JSON，`gh api` 会以 400/422 拒绝。运行一个简短的 `python3` heredoc 来实现 JSON 字符串，并通过 `write` 工具将其持久化到 `<pending_review_payload>`：
+
+   ```bash
+   python3 <<'PY'
+   import json
+   payload = {
+       "commit_id": "<head_sha>",
+       "body": "<组装的正文>",
+       "comments": [
+           {
+               "path": "src/foo.rs",
+               "line": 42,
+               "side": "RIGHT",
+               "body": "**[bug]** 描述文本\n\n**建议：** 建议文本",
+           },
+           # ... 每个内联评论一个条目
+       ],
+   }
+   print(json.dumps(payload, ensure_ascii=False, indent=2))
+   PY
+   ```
+
+   `json.dumps(payload, ensure_ascii=False, indent=2)` 自动处理所有引号、反斜杠和换行符转义。捕获打印的 JSON 并将其作为 `content` 参数传递给 `write` 工具，文件路径为 `<pending_review_payload>`。
+
+5. 发布审查：
+
+   ```bash
+   gh api "repos/${owner}/${repo}/pulls/${pr_number}/reviews" \
+       -X POST \
+       --input "${pending_review_payload}" \
+       > /tmp/grok-review-post-${REVIEW_ID}.json 2> /tmp/grok-review-post-${REVIEW_ID}.err
+   ```
+
+   捕获标准输出和标准错误。
+
+6. **错误处理**：如果 `gh api` 调用退出非零，向用户逐字显示捕获的 stderr 以及 HTTP 状态代码（可从 `gh api` 的 stderr 消息解析）。不要重试。按状态分类的常见情况：
+   - **422 无法处理的实体**：评论引用差异之外的行（差异行过滤器遗漏了某些内容，例如，审查者产生了幻觉的文件路径）、`commit_id` 已过期（PR 在步骤 1 和现在之间被强制推送）或 `side` 值被拒绝。
+   - **403 禁止**：经过身份验证的用户缺乏对 PR 的评论权限（仓库的只读协作者、存档的仓库）。
+   - **404 未找到**：PR 不存在（用户传递了错误的编号，或 URL 在用户无法看到的私有仓库中）。
+   - **5xx**：GitHub 端中断或瞬态故障。
+
+   对于任何错误，还要在磁盘上保留 `<review_file>`（跳过步骤 4 中的 PR 模式 review_file 删除），以便用户可以看到本应发布的内容，并使用更正的输入重新运行或通过其他渠道提交注释。在错误消息中提及保留的路径。
+
+7. 成功时，面向用户的待定审查 URL 是 PR 文件选项卡，待定审查在其中显示，"完成您的审查"/"提交审查"按钮位于其中：
+
+   ```
+   https://github.com/<owner>/<repo>/pull/<pr_number>/files
+   ```
+
+   从已验证的 `owner`、`repo` 和 `pr_number` 构造此 URL — **不要**使用 GitHub 响应中的 `html_url` 字段。响应的 `html_url` 指向审查对象的深层链接，该链接不像文件选项卡那样干净地显示提交按钮。（响应仍然解析审查 `id`，它记录在最终报告中；不使用 `html_url` 字段。）
+
+   作为结构化块（而不是一堵文本墙）打印给用户：
+
+   ```
+   已在 PR #<pr_number> 上创建 PENDING 审查。
+   - 内联评论：<N>
+   - 正文发现（差异之外）：<M>
+   - 提交地址：https://github.com/<owner>/<repo>/pull/<pr_number>/files
+     （滚动到"完成您的审查"-> 点击"提交审查"）。
+   在您提交之前，评论只对您可见。
+   ```
+
+## 步骤 4：清理
+
+清理行为按模式和结果**不对称**：
+
+- **本地和分支模式**：保留 `<review_file>` 和 `<summary_file>` — 它们是可交付成果。仅删除 `<diff_file>` 和 `/tmp/grok-review-files-${REVIEW_ID}.txt` 辅助文件。
+- **PR 模式，成功发布**：删除 `<review_file>`、`<diff_file>`、`<pending_review_payload>`、`/tmp/grok-review-prmeta-${REVIEW_ID}.json`、`/tmp/grok-review-files-${REVIEW_ID}.txt` 和发布 stdout/stderr 捕获文件。GitHub 上的待定审查是可交付成果；本地文件不再需要。`<summary_file>` 从未在 PR 模式下写入，因此那里无需操作。
+- **PR 模式，发布失败（任何非零 `gh api` 退出）**：保留 `<review_file>`，以便用户可以看到本应发布的内容，并通过其他渠道提交。像成功路径一样删除其余部分。最终报告必须提及保留的路径。
+- **PR 模式，无审查者输出（涵盖零问题提前退出和带空差异的 PR 退出）**：删除所有 `<diff_file>`、`<pending_review_payload>`（从未创建 — `rm -f` 是无操作）、`/tmp/grok-review-prmeta-${REVIEW_ID}.json`、`/tmp/grok-review-files-${REVIEW_ID}.txt` 和 `<review_file>`（在审查者从未运行的空差异情况下是无操作，并在零问题情况下删除空的可操作内容文件）。此子情况是未向 GitHub POST 的任何 PR 模式退出的捕获所有。
+
+清理命令：
+
+```bash
+# 本地/分支模式（始终 — 涵盖成功审查和空差异退出情况；
+# 空差异退出发生在 <diff_file> 包含任何有用内容之前，但 rm -f 对
+# 不存在或已为空的文件是无操作）
+rm -f "${diff_file}" /tmp/grok-review-files-${REVIEW_ID}.txt
+
+# PR 模式，成功发布
+rm -f "${review_file}" "${diff_file}" "${pending_review_payload}" \
+      /tmp/grok-review-prmeta-${REVIEW_ID}.json \
+      /tmp/grok-review-files-${REVIEW_ID}.txt \
+      /tmp/grok-review-post-${REVIEW_ID}.json \
+      /tmp/grok-review-post-${REVIEW_ID}.err
+
+# PR 模式，发布失败 -- 从 rm 命令中省略 "${review_file}"
+rm -f "${diff_file}" "${pending_review_payload}" \
+      /tmp/grok-review-prmeta-${REVIEW_ID}.json \
+      /tmp/grok-review-files-${REVIEW_ID}.txt \
+      /tmp/grok-review-post-${REVIEW_ID}.json \
+      /tmp/grok-review-post-${REVIEW_ID}.err
+
+# PR 模式，无审查者输出（零问题提前退出或空差异退出）
+rm -f "${review_file}" "${diff_file}" "${pending_review_payload}" \
+      /tmp/grok-review-prmeta-${REVIEW_ID}.json \
+      /tmp/grok-review-files-${REVIEW_ID}.txt
+```
+
+## 步骤 5：最终报告
+
+向用户呈现最终报告。项目 1 始终包含；项目 2 在空差异退出时省略；项目 3 在空差异退出和 PR 零问题提前退出时省略；项目 4 始终包含。
+
+1. **模式 + 目标** — 例如，"本地更改"或"分支 feature/foo vs origin/main"或"PR #4221：<pr_title>"。
+2. **已审查文件** — 计数和（如果 10 个或更少）列表。在空差异退出时省略。
+3. **按严重性划分的问题** — bug/建议/nit 计数。在空差异退出和 PR 零问题提前退出时省略（计数按构造都为零；特定于模式的要点说明了这一点）。
+4. **特定于模式的输出**：
+   - 本地/分支（成功审查）：`<review_file>` 和 `<summary_file>` 的完整路径，加上摘要的主要问题列表的一行副本。
+   - 本地/分支（空差异退出）："无需审查的更改。"（本地模式）或"分支 <target> 与 <BASE> 相比没有更改。"（分支模式）。无文件路径 — 未写入任何内容。
+   - PR（成功发布）：步骤 3 PR 模式项目 7 中的结构化提交块（PR 编号、内联评论计数、正文发现计数、文件选项卡 URL、提交提醒），加上响应中的审查 `id`（用于可追溯性）。
+   - PR（零问题提前退出）："审查者在 PR #<pr_number> 上未发现问题。未创建 PENDING 审查。"
+   - PR（空差异退出）："PR #<pr_number> 没有更改。无需审查。"
+   - PR（发布失败）：`gh api` 的逐字 stderr 加上 HTTP 状态代码，加上 `<review_file>` 的保留路径，以便用户可以恢复发现。
+
+## 进行中报告
+
+在每个阶段后向用户提供简短的状态更新：
+
+- 参数解析后："正在审查 <mode> 目标：<target-summary>。"（本地模式省略目标 — "正在审查本地更改。"）
+- 步骤 1（差异收集）后："已收集差异（<N> 个文件，<M> 个更改行）。正在启动审查者..."
+- 步骤 1（空差异）后："无需审查的更改。正在进行最终报告。"
+- 步骤 2（审查者完成）后："审查完成。正在处理发现..."
+- 步骤 3（本地/分支）后："发现 N 个问题（X 个 bug，Y 个建议，Z 个 nit）。已写入 <review_file> 和 <summary_file>。"
+- 步骤 3（PR，零问题）后："审查者在 PR #<pr_number> 上未发现问题。未创建 PENDING 审查。"
+- 步骤 3（PR，成功）后："已发布带有 N 个内联评论和 M 个正文发现的 PENDING 审查。访问 <url> 以提交。"
+- 步骤 3（PR，错误 — 422 或任何其他非零退出）后："无法发布待定审查。HTTP <状态>。GitHub 返回：<逐字 stderr>。审查注释保留在 <review_file>。"
+
+## 规则
+
+- **审查者是只读的** — 审查者子代理绝不能修改文件。编排器也绝不能修改源文件。唯一的写入是到 `<review_file>`、`<summary_file>`、`<diff_file>`、`<pending_review_payload>` 和 GitHub PENDING 审查。
+- **将审查者角色注入提示** — 始终在子代理提示前添加 `reviewer` 角色指令（来自共享角色文件）。不要向 `spawn_subagent` 传递 `persona` 参数。
+- **在审查者提示中包含上下文** — 审查者需要通过任务提示传递对话上下文（用户的框架、任何约束等）。
+- **每次运行一个审查者** — 此技能运行单个审查者。多审查者运行是 `/implement` 与 `--effort N` 的工作。
+- **消歧是确定性的** — 参数解析中的自动检测规则按顺序应用。不要对它们进行二次猜测。如果规则不匹配，询问用户；不要猜测。
+- **空差异短路** — 永远不要用空差异启动审查者。报告"无更改"，运行清理，并生成最终报告（使用适当的"空差异退出"要点）。
+- **零问题短路 PR 模式** — 如果审查者在 PR 上没有发现任何内容，不要发布空的 PENDING 审查。打印"未发现问题"消息，清理并停止。
+- **PR 模式需要 `gh` 身份验证** — 如果 `gh auth status` 失败，停止并明确说明运行 `gh auth login`。不要尝试解决它。
+- **PENDING 审查由用户提交** — 编排器从不在审查有效负载上设置 `event` 字段。用户通过 GitHub UI 审查并提交。始终打印 URL 加上通过 UI 提交的提醒。
+- **将内联评论过滤到差异中实际存在的行** — GitHub 对差异之外的行上的评论返回 422。编排器解析差异本身以验证 `(file, line)` 对，并将任何差异之外的问题提升到顶级正文作为要点。
+- **逐字显示每个 `gh api` 错误** — 如果 GitHub API 调用退出非零（422、403、404、5xx，任何其他），不要重试。向用户显示原始 stderr 加上 HTTP 状态代码，以便他们可以调试，并在磁盘上保留 `<review_file>`，以便不会丢失发现。
+- **无辅助脚本** — 编排器内联进行差异解析和 JSON 构建。
+- **清理按模式和结果不对称** — 本地/分支模式保留 `<review_file>` 和 `<summary_file>`（它们是可交付成果）。PR 模式在成功发布时删除 `<review_file>`（待定 GitHub 审查是可交付成果）和在无审查者输出退出时（零问题或空差异 — 无需保留可操作内容），但在发布失败时保留它，以便用户可以恢复发现。
+- **在所有步骤中使用相同的文件路径** — 永远不要在步骤之间重新生成路径。`REVIEW_ID` 对于运行是固定的。
+- **错误处理** — 如果审查者子代理失败、差异收集失败或 GitHub API 调用失败，向用户报告错误并停止。不要在缺少结果的情况下默默继续。
+- **输出中无表情符号** — 匹配 `reviewer` 角色指令和周围技能的约定。
+
+## 设计注释
+
+这些是背景注释，解释了上面一些选择背后的原理。它们不是规则；它们是未来维护者的指针。
+
+- **无辅助脚本。** `<review_file>` 的 markdown 解析和统一差异块遍历定义明确且足够小，可以直接在编排器中完成（使用 `read_file` 加载输入并使用 `write` 创建 JSON 有效负载）。这遵循与 `xai-pr-comments` 相同的自包含模式。如果未来的维护者发现内联方法确实难以处理 — 例如，解析器在许多真实世界的 PR 中一致地错误计数块 — 可以添加一个辅助程序在 `.grok/skills/review/scripts/build_pending_review.py`，并提供明确的理由。截至撰写本文时，不存在此类辅助程序。
+- **Owner/repo 从 PR `url` 派生，而不是从 `baseRepository` 字段派生。** `gh pr view --json baseRepository` 返回 `Unknown JSON field: "baseRepository"` — 仅公开 `headRepository`、`headRepositoryOwner` 和 `isCrossRepository`。解析 URL 是最简单的通用方法，并且对于跨仓库 PR 正确工作。
