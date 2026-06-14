@@ -1497,3 +1497,797 @@ Grok Build 提供了一个可扩展的技能系统，允许定义和执行复杂
 
 有关特定技能的详细信息，请参阅相应的技能定义和角色文档。
 
+1. 通过 `run_terminal_cmd` 运行 `python3 "${MEMORY_HELPER}" snapshot` 并捕获标准输出。辅助程序输出结构化 JSON——编排器中不需要重新解析 markdown。格式为：
+
+   ```json
+   {
+     "common_issues": [
+       {"category": "Error Handling", "description": "Missing null check", "count": 5},
+       ...
+     ],
+     "recent_runs": [
+       {"date": "2026-04-23", "description": "\"Add retry logic\"", "body_lines": ["- **Rounds**: 2", "- **Issues**: 7 total (1 bug, 1 suggestion, 5 nits)", "- **Key patterns**: Missing entries in error-type allowlists, incomplete configuration validation", "- **Specializations used**: general"]},
+       ...
+     ],
+     "exists": true
+   }
+   ```
+
+   解析 JSON 并将 `common_issues` 列表存储为 `existing_patterns_snapshot`（在步骤 6b 中使用）。将布尔值 `exists` 存储为 `memory_existed_before`（在最终报告中用于决定使用"文件已创建"还是"文件已更新"措辞）。`recent_runs` 数组包含在快照中用于调试和向前兼容（`memory.py snapshot | jq '.recent_runs'`）；编排器当前不消费它。每个条目的 `body_lines` 是逐字的 markdown 项目符号（保留前导 `- ` 和 `**...**` 格式）。
+2. 如果辅助程序以非零状态退出（非常罕见——仅在 `$HOME` 未设置且无法推断 home 失败，或 cwd 不可读时发生），记录简短说明，将 `past_issues_briefing` 设置为 `""`，`existing_patterns_snapshot` 设置为 `[]`，`memory_existed_before` 设置为 `false`，然后继续执行步骤 1。注意非 git 工作空间**不是**失败模式——辅助程序会回退到基于 cwd 的 id。
+3. 如果 `existing_patterns_snapshot` 为空（或 `exists` 为 `false`），将 `past_issues_briefing` 设置为 `""` 并跳过下面的简报块。
+
+在 /implement 运行期间不要直接读取或写入 `.grok/implement-issues.md`——该旧路径是每个工作树独立的，不再使用。辅助程序是路径的唯一真实来源。
+
+**从旧文件的一次性迁移：** 如果用户有来自先前版本的已填充 `.grok/implement-issues.md`，其 `## Common Issues` 和 `## Recent Runs` 部分使用下面 [内存文件格式](#memory-file-format) 中记录的**相同 markdown 格式**。要将该历史记录向前迁移：
+
+1. **从工作空间根目录**（`.grok/implement-issues.md` 所在的同一目录——workspace-id 派生自 cwd 的 git 上下文，因此从 `~` 或任何不相关的目录运行将写入错误工作空间的内存文件），使用空规范运行一次 `python3 "${MEMORY_HELPER}" update`（`echo '{}' | python3 "${MEMORY_HELPER}" update`）以创建工作空间范围的文件及其父目录——`memory.py path` 仅计算路径，不创建目录。
+2. 在编辑器中打开打印的文件路径。
+3. 手动将旧文件的 `## Common Issues` 部分中的项目符号复制到新文件中的相应类别（保留 `- description (seen N time(s))` 语法）。
+4. 辅助程序在下次 `update` 时获取这些条目。
+
+没有自动迁移。
+
+### 解析和格式化
+
+如果 `existing_patterns_snapshot` 非空：
+
+1. 仅过滤 `count >= 2` 的条目（最小阈值——一次性问题被排除，因为它们可能不代表真正的模式）。
+2. 按 `count` 降序排序。
+3. 取前 10 个条目。
+4. 将它们格式化为简报块并存储在 `past_issues_briefing` 中：
+
+```
+## 需要避免的过去问题
+基于之前的实现运行，以下模式通常会导致问题：
+1. 函数输入缺少 null/undefined 检查（出现 5 次）
+2. 缺少错误/边缘情况路径的测试（出现 8 次）
+3. 函数超过 50 行而未分解（出现 4 次）
+4. 魔术数字未使用命名常量（出现 6 次）
+
+在你的工作中特别注意这些模式。
+```
+
+（当 `count == 1` 时使用 `time`，否则使用 `times`。辅助程序在文件中以相同方式呈现两种形式，因此简报应匹配。）
+
+如果没有符合条件的条目，将 `past_issues_briefing` 设置为 `""`。
+
+### 优雅降级
+
+如果辅助程序命令因任何原因失败，将 `past_issues_briefing` 设置为 `""`，`existing_patterns_snapshot` 设置为 `[]`，`memory_existed_before` 设置为 `false`，然后正常继续。绝不要因内存检索问题而使运行失败——记录简短说明并继续。
+
+## 步骤 1：实现
+
+**仅使用 `spawn_subagent`**——不要自己实现代码。
+
+通过调用 `spawn_subagent` 启动实现者子代理。**在生成任何用户可见的"实现者正在启动"消息之前发出 `spawn_subagent` 工具调用**——启动公告应该在*稍后的*助手消息中，在你获得工具结果和真实的 `subagent_id` 之后。仅包含内容的助手消息声称实现者已启动，但在同一响应中没有配对的 `spawn_subagent` 调用，这是幻觉并会破坏运行（参见上面的工具调用纪律）。
+
+`spawn_subagent` 参数：
+- `subagent_type`：`"general-purpose"`
+- `description`：`"Implement: <简短摘要>"`
+
+**在提示前添加实现者角色指令**（在设置期间加载）。
+
+提示：
+```
+<implementer_persona_instructions>
+
+---
+
+实现以下内容：
+
+<完整的用户描述和对话中的所有相关上下文>
+
+<如果 past_issues_briefing 非空，逐字包含以下块：>
+<past_issues_briefing>
+在你的实现中主动避免这些模式。
+<结束如果>
+
+完成后，将实现摘要写入：<summary_file>
+摘要必须包括：更改了哪些文件、添加/修改了什么内容以及做出的任何设计决策。
+```
+
+等待子代理完成。如果失败，向用户报告错误并停止。
+
+保存返回的 `subagent_id`——你将在所有修复轮次中恢复此代理。
+
+向用户报告："实现完成。开始审查..."（对于 effort=1）或"实现完成。开始并行审查（N 个审查者）..."（对于 effort >= 2）。
+
+### 准备审查者关注领域
+
+在启动审查者之前，自己读取 `<summary_file>`。根据实现摘要，识别 2-5 个审查者应特别关注的具体领域。示例：
+
+- 如果摘要提到新的错误处理路径："验证错误路径已测试并正确传播"
+- 如果文件被重构："检查重命名/移动函数的所有调用者是否都已更新"
+- 如果添加了并发原语："审查锁定顺序和潜在的死锁"
+- 如果引入了新的公共 API："检查 API 边界处的输入验证"
+
+将这些存储为 `reviewer_focus_areas`（简短的项目符号列表）。将它们与 `past_issues_briefing` 一起包含在每个审查者提示中。
+
+## 步骤 2：审查
+
+**仅使用 `spawn_subagent`**——不要自己审查代码。
+
+审查步骤根据努力级别而有所不同。
+
+### Effort = 1（单个审查者）
+
+通过调用 `spawn_subagent` 启动单个审查者子代理。
+
+`spawn_subagent` 参数：
+- `subagent_type`：`"general-purpose"`
+- `description`：`"Review implementation"`
+
+**在提示前添加审查者角色指令**（在设置期间加载）。
+
+提示：
+```
+<reviewer_persona_instructions>
+
+---
+
+审查实现者所做的更改。
+
+实现者的摘要位于：<summary_file>
+阅读它以了解更改了什么。
+
+<如果 past_issues_briefing 非空，逐字包含以下块：>
+<past_issues_briefing>
+<结束如果>
+
+<如果 reviewer_focus_areas 非空：>
+## 额外关注领域（来自实现摘要）
+<reviewer_focus_areas>
+<结束如果>
+
+将你的审查笔记写入：<review_file>
+使用结构化格式，包括每个问题的严重性（bug/suggestion/nit）、file:line、描述、建议和状态。
+每个问题必须有一个设置为"open"的状态字段。
+```
+
+等待子代理完成。如果失败，向用户报告错误并停止。
+
+保存返回的 `subagent_id` 到 `reviewer_configs[0].subagent_id`。
+
+### Effort >= 2（并行审查者）
+
+通过为每个审查者调用带有 `background: true` 的 `spawn_subagent` 来并行启动所有审查者。
+
+对于 `reviewer_configs` 中的每个配置，使用适合该专业化的提示启动：
+
+`spawn_subagent` 参数：
+- `subagent_type`：`"general-purpose"`
+- `background`：`true`
+- `description`：`"Review: <专业化>"`
+
+如果 `config.persona_to_inject` 非空，则在提示前添加相应的角色指令。如果为 null（Tests、Plan Alignment），按原样使用提示——这些专业化仅基于提示。
+
+使用特定于专业化的提示（参见下面的专业化审查提示）。
+
+启动所有审查者后，通过 `get_command_or_subagent_output(task_id=..., block=true)` 等待所有审查者完成。
+
+将每个返回的 `subagent_id` 保存到相应的 `reviewer_configs` 条目。
+
+如果任何审查者在初始启动时失败：
+- 如果**通用审查者**失败：报告错误并完全停止。
+- 如果**专家**失败：报告警告，从 `reviewer_configs` 中删除该条目，并继续使用剩余的审查者。
+
+所有审查者完成后，继续执行步骤 3（合并和检查）。
+
+向用户报告："所有审查者完成。正在合并发现..."
+
+## 专业化审查提示
+
+每个审查者专业化都获得不同的提示，同时共享相同的结构化输出格式和严重性分类（`bug`、`suggestion`、`nit`）。
+
+所有专业化审查提示都包含 `past_issues_briefing` 块（如果非空）以使审查者了解历史上常见的问题。
+
+### 通用审查者
+
+注入：`reviewer` 角色指令。
+
+```
+<reviewer_persona_instructions>
+
+---
+
+审查实现者所做的更改。
+
+实现者的摘要位于：<summary_file>
+阅读它以了解更改了什么。
+
+<如果 past_issues_briefing 非空，逐字包含以下块：>
+
+<past_issues_briefing>
+<结束如果>
+
+<如果 reviewer_focus_areas 非空：>
+## 额外关注领域（来自实现摘要）
+<reviewer_focus_areas>
+<结束如果>
+
+将你的审查笔记写入：<individual_review_file>
+使用结构化格式，包括每个问题的严重性（bug/suggestion/nit）、file:line、描述、建议和状态。
+每个问题必须有一个设置为"open"的状态字段。
+```
+
+### 测试专家
+
+注入：无（仅提示子代理——不添加角色前缀）。
+
+```
+你是一位全面的测试工程师，审查代码更改的测试覆盖率和质量。
+
+审查实现者所做的更改，特别关注测试覆盖率和质量。
+
+实现者的摘要位于：<summary_file>
+阅读它以了解更改了什么。
+
+<如果 past_issues_briefing 非空，逐字包含以下块：>
+<past_issues_briefing>
+<结束如果>
+
+你的审查应关注：
+- 新增/更改的代码是否有足够的测试覆盖率
+- 测试是否覆盖边缘情况、错误路径和边界条件
+- 测试断言是否足够具体（不仅仅是"不抛出异常"）
+- 测试是否可维护且未过度耦合到实现细节
+- 是否存在针对新端点或接口的集成测试
+- 是否适当使用了模拟（未过度模拟）
+
+不要审查一般代码风格、命名或架构——另一个审查者处理这些。
+
+将你的审查笔记写入：<individual_review_file>
+使用结构化格式，包括每个问题的严重性（bug/suggestion/nit）、file:line、描述、建议和状态。
+每个问题必须有一个设置为"open"的状态字段。
+```
+
+### 安全专家
+
+注入：`security-auditor` 角色指令。
+
+```
+<security_auditor_persona_instructions>
+
+---
+
+审查实现者所做的更改，特别关注安全性。
+
+实现者的摘要位于：<summary_file>
+阅读它以了解更改了什么。
+
+<如果 past_issues_briefing 非空，逐字包含以下块：>
+<past_issues_briefing>
+<结束如果>
+
+你的审查应关注：
+- 输入验证和清理
+- 身份验证和授权检查
+- 注入漏洞（SQL、命令、路径遍历）
+- 敏感数据处理（日志中的密钥、PII、令牌）
+- 加密正确性
+- 速率限制和滥用防护
+- OWASP Top 10 模式
+
+重要：使用以下严重性标签（不是安全标准严重性）：
+- bug：关键/高严重性发现（可利用的漏洞）
+- suggestion：中等严重性发现（纵深防御改进）
+- nit：低/信息性发现（最佳实践建议）
+
+仅标记真实的、可利用的问题——不是理论上的担忧。
+不要审查一般代码风格或测试覆盖率——其他审查者处理这些。
+
+将你的审查笔记写入：<individual_review_file>
+使用结构化格式，包括每个问题的严重性（bug/suggestion/nit）、file:line、描述、建议和状态。
+每个问题必须有一个设置为"open"的状态字段。
+```
+
+### 计划对齐专家
+
+注入：无（仅提示子代理——不添加角色前缀）。
+
+```
+你是一位技术主管，审查实现是否正确遵循其设计计划。
+
+审查实现者所做的更改，重点关注实现是否与计划/设计匹配。
+
+实现者的摘要位于：<summary_file>
+阅读它以了解更改了什么。
+
+原始计划/设计在对话上下文中引用。
+如果对话上下文中通过文件路径引用了设计文档、计划或规范，在开始审查之前完整阅读它。
+
+<如果 past_issues_briefing 非空，逐字包含以下块：>
+<past_issues_briefing>
+<结束如果>
+
+你的审查应关注：
+- 计划中的所有要求是否得到解决
+- 实现是否偏离了计划的方法
+- 是否发生了任何范围蔓延（实现计划中没有的内容）
+- 是否缺少任何计划的项目
+- 实现顺序是否与计划的依赖关系图匹配
+- 接口是否与指定的内容匹配
+
+不要审查代码风格、测试或安全性——其他审查者处理这些。
+
+将你的审查笔记写入：<individual_review_file>
+使用结构化格式，包括每个问题的严重性（bug/suggestion/nit）、file:line、描述、建议和状态。
+每个问题必须有一个设置为"open"的状态字段。
+```
+
+## 步骤 3：合并和检查退出条件
+
+此步骤根据努力级别而有所不同。
+
+### Effort = 1
+
+自己读取 `review_file`。计算所有 `Status: open` 的问题，无论严重性如何。
+
+增加 `round_count`。对于每个未解决的问题，将其严重性添加到 `total_issues_by_severity`。还提取每个未解决问题的一行描述并追加到 `issue_patterns`（跳过列表中已存在的完全重复项）。
+
+### Effort >= 2（合并）
+
+所有审查者完成后：
+
+1. 读取每个审查者的单独审查文件。
+2. 使用源标签合并到单个 `review_file` 中。为每个问题添加标签以指示其来源：`[General]`、`[General-2]`、`[General-3]`、`[Tests]`、`[Security]`、`[Plan]`。对于 effort 1-3，单个通用审查者仅使用 `[General]`。
+3. 合并明显重复的发现——使用你的判断来识别引用相同文件、相同行和相同根本问题的问题。如有疑问，保留两个问题——误判重复比冗余发现更糟糕。
+4. 将合并结果写入 `review_file`。
+
+增加 `round_count`。计算所有未解决的问题并将其严重性添加到 `total_issues_by_severity`。还提取每个未解决问题的一行描述并追加到 `issue_patterns`（跳过列表中已存在的完全重复项）。
+
+**合并格式：**
+
+```markdown
+## 审查问题
+
+### 问题 1 [General] — 严重性：bug
+- **文件**：src/handler.rs:45
+- **描述**：用户输入缺少 null 检查
+- **建议**：在处理之前添加验证
+- **状态**：open
+### 问题 2 [Security] — 严重性：bug
+- **文件**：src/auth.rs:102
+- **描述**：JWT 令牌未验证过期时间
+- **建议**：添加 exp 声明验证
+- **状态**：open
+
+### 问题 3 [Tests] — 严重性：suggestion
+- **文件**：tests/handler_test.rs
+- **描述**：用户输入为 null 时没有错误路径测试
+- **建议**：为 None 输入添加测试用例
+- **状态**：open
+```
+
+对于 effort >= 4 且有多个通用审查者的情况，源标签区分它们：`[General]`、`[General-2]`、`[General-3]`。如果两个通用审查者标记相同的问题，按常规合并。
+
+### 僵局检测
+
+将当前的 review_file 与上一轮的 `previous_review_snapshot` 进行比较。如果任何问题（通过文件引用和描述匹配，如果存在则通过源标签匹配）在上一轮被实现者标记为 `Status: wontfix`，并且在当前轮次被审查者重新打开（`Status: open`），则实现者和审查者已经达到了他们自己无法解决的分歧。
+
+如果检测到僵局，继续执行步骤 3a（上报给用户）。
+
+完成步骤 3 检查后，使用当前 review_file 内容更新 `previous_review_snapshot`。
+
+### 决策逻辑
+
+使用进行中报告部分的适当消息格式向用户报告审查结果（针对 0 问题和 N 问题情况的 effort=1 与 effort>=2 变体）。
+
+- **0 个未解决问题**：完成。继续执行步骤 6（内存刷新），然后最终报告。
+- **检测到僵局**：继续执行步骤 3a（上报给用户）。
+- **任何未解决的问题（>0）**：继续执行步骤 4。
+
+### 步骤 3a：上报给用户
+
+对于任何僵局争议，向用户请求决策（如果可用，使用适当的 ask/question 工具）：
+- 清楚地陈述问题，包括审查者的立场和实现者的立场
+- 将竞争选项作为可选选项提供
+- 包含实现的上下文，以便用户可以做出明智的决策
+
+用户响应后，使用用户的决策包含在提示中恢复实现者（步骤 4）。告诉实现者将用户决策视为最终决策——在不进一步辩论的情况下纳入它们，并将相应的问题设置为 `Status: fixed`。
+
+## 步骤 4：修复（恢复实现者）
+
+**仅使用 `spawn_subagent`**——不要自己应用修复。
+
+恢复原始实现者以解决**所有**审查发现。
+
+`spawn_subagent` 参数：
+- `subagent_type`：`"general-purpose"`
+- `resume_from`：`<implementer_subagent_id>`
+- `description`：`"Fix review issues"`
+提示：
+```
+审查者发现了问题。review_file 位于：<review_file>
+
+阅读 review_file。解决所有状态为 open 的问题——包括 nits、建议以及任何风格或提示级别的反馈。没有什么问题太小而不值得修复。
+
+对于每个问题，实施修复，然后更新 review_file：
+- 将 Status: open → Status: fixed
+- 添加一个 Response 字段解释你更改了什么
+
+我们鼓励你对不合理、矛盾或会使实现变差的反馈提出反驳。如果你不同意某个问题：
+- 设置 Status: wontfix
+- 撰写清晰的技术解释，说明为什么审查者的建议是错误的或适得其反的
+- 不要仅仅为了让审查者高兴而遵守反馈——捍卫好的实现决策
+
+在 review_file 底部追加更新的实现摘要。
+```
+
+等待完成。如果失败，向用户报告错误并停止。
+
+使用返回的新 `subagent_id` 更新已保存的实现者 `subagent_id`。
+
+向用户报告："修复已应用。正在运行重新审查（第 N 轮）..."（对于 effort=1）或"修复已应用。正在运行并行重新审查（第 N 轮）..."（对于 effort >= 2），其中 N 是当前的 `round_count` + 1。
+
+## 步骤 5：重新审查
+
+**仅使用 `spawn_subagent`**——不要自己重新审查。
+
+重新审查步骤根据努力级别而有所不同。
+
+### Effort = 1（单个审查者重新审查）
+
+恢复原始审查者以重新审查修复。
+
+`spawn_subagent` 参数：
+- `subagent_type`：`"general-purpose"`
+- `resume_from`：`<reviewer_subagent_id>`
+- `description`：`"Re-review fixes"`
+
+提示：
+```
+实现者已解决审查问题。重新审查所有更改。
+
+包含实现者响应的更新后的 review_file 位于：<review_file>
+实现者的摘要位于：<summary_file>
+
+阅读两个文件。再次彻底审查代码。
+
+使用你的新发现重写 review_file：
+- 如果之前的问题已正确修复，不要重新列出它。
+- 如果修复引入了新问题，将其作为新问题列出，状态为 open。
+- 如果任何问题未得到正确解决，重新列出它，状态为 open。
+- 使用相同的结构化格式（严重性：bug/suggestion/nit、file:line、描述、建议、状态）。
+```
+
+等待完成。如果失败，向用户报告错误并停止。
+
+使用返回的新 `subagent_id` 更新已保存的审查者 `subagent_id`。
+
+如果 `resume_from` 失败（子代理已过期），启动新的审查者，在提示前添加 `reviewer` 角色指令。记录警告。
+
+### Effort >= 2（并行重新审查）
+
+并行恢复所有审查者。每个审查者都使用 `resume_from`（使用 `reviewer_configs` 中的 `subagent_id`）和 `background: true` 恢复。角色指令已经在初始启动时存在于每个审查者的记录中，因此在恢复时不需要重新注入。
+
+对于 `reviewer_configs` 中的每个配置：
+
+`spawn_subagent` 参数：
+- `subagent_type`：`"general-purpose"`
+- `resume_from`：`config.subagent_id`
+- `background`：`true`
+- `description`：`"Re-review: <专业化>"`
+
+提示（与初始审查相同的结构，但带有重新审查指令）：
+```
+实现者已解决审查问题。重新审查所有更改。
+
+包含实现者响应的更新后的合并 review_file 位于：<review_file>
+实现者的摘要位于：<summary_file>
+
+阅读两个文件。再次彻底审查代码。
+
+将你的审查文件重写到：<individual_review_file>
+- 如果之前的问题已正确修复，不要重新列出它。
+- 如果修复引入了新问题，将其作为新问题列出，状态为 open。
+- 如果任何问题未得到正确解决，重新列出它，状态为 open。
+- 使用相同的结构化格式（严重性：bug/suggestion/nit、file:line、描述、建议、状态）。
+- 保持与初始审查相同的审查范围。
+```
+
+启动所有重新审查者后，通过 `get_command_or_subagent_output(task_id=..., block=true)` 等待所有审查者完成。
+
+使用返回的新 `subagent_id` 更新 `reviewer_configs` 中的每个 `subagent_id`。
+
+如果审查者在重新审查期间失败：
+- 报告警告并将该审查者的发现排除在合并之外。
+- 继续使用剩余的审查者。
+
+如果审查者的 `resume_from` 失败（子代理已过期），为该专业化启动新的审查者，从 `config.persona_to_inject`（如果非 null）在提示前添加角色指令。记录警告。
+**无论努力级别如何，返回步骤 3。** 重复直到 0 个未解决问题。
+
+## 退出条件
+
+**唯一**的退出条件是**所有审查者**在同一轮中报告**任何严重性的 0 个问题**。没有迭代上限。每个问题——包括 nits、建议和小改进——都必须在循环终止之前得到解决。
+
+没有每个审查者的退出——如果安全审查者有 0 个问题，但通用审查者有 2 个，实现者修复这 2 个问题，所有审查者在下一轮中重新审查。
+
+## 步骤 6：内存刷新
+
+循环以 0 个未解决问题终止后，使用此运行的模式更新工作空间内存文件。编排器使用自己的工具直接执行此操作——此步骤不需要子代理。
+
+写入通过 `python3 "${MEMORY_HELPER}" update` 进行，以便：
+- 路径解析为**共享的工作空间范围文件**（`$HOME/.grok/implement-memory/<workspace-id>.md`），而不是每个工作树的文件。
+- 在读取-合并-写入期间持有独占的 `fcntl.flock`（Python 标准库；不需要 `flock(1)` shell 二进制文件），因此同一仓库的另一个工作树中的 /implement 运行不会破坏此更新。
+- 对现有条目的去重被**确定性地**强制执行（在每个类别中不区分大小写和空格的匹配）。
+- 强制执行压缩：每个类别上限为 25 个条目（首先删除计数最低的条目）；Recent Runs 上限为 20 个条目（删除最旧的）。
+- 严格的输入验证：格式错误的类型（例如，非列表的 `key_patterns`、需要字典的地方是字符串、日历无效的 `date`）会快速失败，退出代码为 4 并显示清晰的错误消息，而不是静默破坏文件。
+
+### 步骤 6a：收集和分类此运行的模式
+
+1. 使用在步骤 3 中跨所有轮次累积的 `issue_patterns` 列表。此列表包含在运行期间任何审查检查点处未解决的每个不同问题的一行描述。
+2. **泛化每个模式。** 内存文件的存在是为了帮助*未来*对*不同*任务的运行——引用此任务的特定代码、变量名或领域对象的模式是无用的噪音。去除特定于实现的细节（文件名、变量名、类型名、函数名、特定于领域的术语），并将每个模式重写为适用于不同代码库和任务的可重用原则：
+   - 不好："重试处理程序列表中缺少错误类型 `RetryableError`" → 好："错误类型或配置允许列表中缺少条目"
+   - 不好："JWT 令牌未验证过期时间" → 好："令牌或凭证缺少过期/TTL 验证"
+   - 不好："`calculateTotal` 函数超过 80 行" → 好："函数超过合理长度而未分解"
+   - 不好："`handleUserAuth` 错误路径没有测试" → 好："缺少错误/边缘情况路径的测试"
+   - 不好："`userId` 参数缺少 null 检查" → 好："函数输入缺少 null/undefined 检查"
+   如果模式*已经*是通用的（例如，"函数输入缺少 null 检查"），保持原样。如果多个特定于任务的模式泛化为相同的可重用原则，将它们折叠为一个条目。
+3. 将每个泛化模式分类为以下之一：Error Handling、Testing、Security、Code Quality、Naming、Documentation、Performance，或其他适当的简短类别名称。尽可能重用 `existing_patterns_snapshot`（在步骤 0 中捕获）的现有类别名称——当模式适合时，不要发明几乎重复的类别，如"Error-Handling"或"Tests"，当已经存在一个时。
+4. 对于每个模式，编写简洁的一行描述。将描述保持在单行上；辅助程序会折叠任何嵌入的换行符，但不使用换行符编写更干净。
+
+### 步骤 6b：针对现有条目协调措辞
+
+在将泛化模式交给辅助程序之前，在*措辞*级别使用 `existing_patterns_snapshot` 进行去重：
+
+1. 对于此运行的每个模式，扫描 `existing_patterns_snapshot` 以查找相同（或语义等效）类别中描述含义相同的条目——即使措辞不同。匹配示例：
+   - "输入缺少 null 检查" ≈ "函数参数没有 null 验证"
+   - "函数超过 50 行" ≈ "长函数未分解"
+   - "错误路径没有测试" ≈ "缺少失败情况的测试"
+2. **如果存在语义匹配：** 将此运行的描述替换为**确切的现有描述字符串**（因此辅助程序的规范化匹配将它们折叠到同一条目上）。
+3. **如果不存在匹配：** 保持你的简洁描述不变。它将作为新条目添加。
+4. **在此运行自己的列表中：** 也按措辞去重——如果你有两个意思相同的模式，将它们折叠为单个条目（否则辅助程序会将它们计为两个不同的命中，这很好，但会稍微夸大新模式统计数据）。
+
+辅助程序还将执行最终的大小写/空格/标点规范化，但它无法推断语义等效性——这是编排器在这里的工作。跳过此步骤会导致辅助程序无法折叠的几乎重复条目。
+
+### 步骤 6c：构建更新规范
+
+构建具有此形状的 JSON 对象（仅当你想记录模式而不记录运行时才省略 `run`；在正常流程中，始终包括两者）：
+```json
+{
+  "patterns": [
+    {"category": "Error Handling", "description": "Missing null/undefined checks on function inputs"},
+    {"category": "Testing", "description": "Missing tests for error/edge case paths"}
+  ],
+  "run": {
+    "date": "2026-04-23",
+    "description": "Add retry logic to blackbox client",
+    "rounds": 2,
+    "issues_by_severity": {"bug": 1, "suggestion": 1, "nit": 5},
+    "key_patterns": ["Missing entries in error-type allowlists", "Incomplete configuration validation"],
+    "specializations": ["general"]
+  }
+}
+```
+
+字段说明（辅助程序拒绝类型错误的输入，退出代码为 4 并显示清晰的错误消息，标识违规字段；空或 null 输入根据以下每个字段规则回退到默认值或被静默跳过）：
+- `patterns[]`：每个条目必须是对象。`category` 必须是字符串（如果为空/null，默认为 `"Other"`）。`description` 必须是字符串；**null 和省略被同等对待**（两者都导致静默跳过而无错误）。
+- `patterns[].description`：单行，在步骤 6b 中协调。换行符/制表符折叠为单个空格；保留内部多空格运行。
+- `run` 必须是对象（不是列表，不是字符串）。发送 `null` 或完全省略它以跳过 Recent Runs 条目。
+- `run.date`：`YYYY-MM-DD` 格式的字符串。日历无效的日期，如 `2026-13-99`，会被拒绝。传递 `null`、空字符串或仅空格字符串，辅助程序填充今天的 UTC 日期。
+- `run.description`：用户的实现请求，修剪为简短标签。必须是字符串（或 `null`/省略以回退到 `"(no description)"`）。辅助程序从描述中去除所有双引号字符，然后在外部恰好包装一对，因此内部引号永远不会产生损坏的嵌套引号标记。（`Add retry "logic" to client` 变成 `"Add retry logic to client"`。）如果需要逐字保留引号，在提交前自己转义它们——辅助程序假设描述是自由格式标签，而不是结构化字符串。
+- `run.rounds`：`round_count` 作为整数。布尔值、浮点数、字符串和列表被拒绝。零按原样接受（在实际 /implement 循环中结构上不可达，但不强制执行）。
+- `run.issues_by_severity`：派生自 `total_issues_by_severity`。必须是具有字符串键和整数值的对象（或 `null`/省略以完全跳过 `**Issues**` 正文行）。零计数严重性从呈现的摘要中静默删除；如果所有严重性都为零（或对象为空），辅助程序完全省略 `**Issues**` 正文行。
+- `run.key_patterns`：必须是字符串列表（或 `null`/省略以跳过 `**Key patterns**` 正文行）。从此运行中选择 2-3 个最重要的模式。**应用与步骤 6a 相同的泛化规则**——去除特定于任务的名称并重写为可重用原则。两个可实现的选项，在运行中保持一致：
+  - **选项 A（推荐）：严重性排名。** 重新读取最新的合并 review_file（此时仍在循环中的磁盘上）。每个问题都有一个 `Severity:` 标签。首先取 1-2 个最高严重性问题（bugs > suggestions > nits），然后用下一个最高严重性填充，直到有 3 个条目。这仅看到**最终轮次幸存者**（实现者实际必须解决的问题），这是自然的"最重要"阅读。
+  - **选项 B（较低努力）：最近排名。** 取 `issue_patterns` 的**最后 2-3 个条目**（列表在步骤 3 中按轮次追加而增长，因此尾部是最近一轮的问题）。这看到**跨轮次累积**，包括在循环中引入和修复的问题。仅当重新读取 review_file 不切实际时才使用此方法——生成的 `key_patterns` 有时会包括最终为 wontfix 或短暂的问题。
+  - **选择一个选项并坚持运行。** 这两个选项返回语义不同的集合，因此在运行中混合它们会使 Recent Runs 日志不一致。
+- `run.specializations`：必须是字符串列表（或 `null`/省略以跳过 `**Specializations used**` 正文行）。首先从 `general-2`/`general-3` 中去除 `-N` 后缀，以便列表是不同专业化类的集合（例如，`["general", "security"]`，而不是 `["general", "general-2", "security"]`）；去重。
+
+### 步骤 6d：调用辅助程序
+
+使用 `write` 工具创建 `/tmp/grok-mem-${IMPL_ID}.json`，其中包含上述 JSON 规范（使用临时文件可避免 heredocs 引入的引用问题），然后通过 `run_terminal_cmd` 调用辅助程序：
+
+```bash
+python3 "${MEMORY_HELPER}" update < /tmp/grok-mem-${IMPL_ID}.json
+```
+
+辅助程序获取锁，解析现有文件，合并，压缩，原子写入，并在标准输出上打印 JSON 统计摘要（使用 `indent=2` 进行漂亮打印）：
+
+```json
+{
+  "file": "/Users/.../implement-memory/proj-d5016f47e5cb.md",
+  "existed_before": false,
+  "stats": {
+    "new_patterns": 2,
+    "merged_patterns": 5,
+    "categories_touched": ["Error Handling", "Testing"],
+    "categories_capped": {},
+    "recent_runs_dropped": 0
+  },
+  "total_categories": 4,
+  "total_patterns": 17,
+  "total_recent_runs": 12
+}
+```
+
+关键字段：
+- `existed_before`：如果文件在此更新之前存在，则为 `true`，如果辅助程序刚刚创建它，则为 `false`。将此用于报告措辞。
+- `stats.categories_capped`：任何超过 `MAX_PATTERNS_PER_CATEGORY` 并删除其最低计数条目的类别的 `{category: dropped_count}` 字典。典型情况下为空字典。
+
+使用这些统计数据向用户报告：
+> "内存已更新：2 个新模式，5 个合并到现有条目中（文件位于 <file>）。"
+
+或者如果 `existed_before` 为 `false`：
+> "内存文件已在 <file> 创建，包含 N 个模式。"
+
+### 内存文件格式
+
+辅助程序编写具有以下结构的 markdown 文件：
+
+<!-- mirror-of: scripts/memory.py DEFAULT_HEADER -->
+<!-- 紧跟此注释的 5 行块必须与 -->
+<!-- '\n'.join(memory.DEFAULT_HEADER) 逐字匹配。漂移检查单元 -->
+<!-- 测试 TestDocsConsistency.test_skill_md_default_header_matches -->
+<!-- 在每次测试运行时断言这一点。 -->
+```markdown
+# 实现审查模式
+
+> 此文件由 /implement 技能维护。
+> 它记录实现审查期间发现的常见问题，以帮助在未来运行中避免它们。
+> 在解析为相同工作空间 id 的所有工作目录之间共享。
+
+## 常见问题
+
+### 错误处理
+- 函数输入缺少 null/undefined 检查（出现 5 次）
+- 未处理 promise 链中的异步错误（出现 3 次）
+- 重新抛出之前缺少错误日志记录（出现 2 次）
+
+### 测试
+- 缺少错误/边缘情况路径的测试（出现 8 次）
+- 测试仅断言错误类型，而不断言错误消息（出现 3 次）
+- 新 API 端点没有集成测试（出现 2 次）
+
+### 安全性
+- 在数据库查询之前未验证用户输入（出现 2 次）
+- 新端点缺少速率限制（出现 1 次）
+### 代码质量
+- 函数超过 50 行而未分解（出现 4 次）
+- 魔术数字未使用命名常量（出现 6 次）
+- 新代码中的命名约定不一致（出现 3 次）
+
+## 最近运行
+
+### 2026-04-23 — "Add retry logic to blackbox client"
+- **轮次**：2
+- **问题**：共 7 个（1 个 bug、1 个 suggestion、5 个 nits）
+- **关键模式**：错误类型允许列表中缺少条目、配置验证不完整
+- **使用的专业化**：general
+
+### 2026-04-22 — "Implement user auth endpoints"
+- **轮次**：3
+- **问题**：共 12 个（3 个 bugs、4 个 suggestions、5 个 nits）
+- **关键模式**：令牌缺少过期/TTL 验证、新端点缺少速率限制、缺少错误/边缘情况路径的测试
+- **使用的专业化**：general、security
+```
+
+格式说明：
+- 在每个类别中，条目按计数降序然后按描述升序（不区分大小写）排序。
+- 生成并解析 `seen 1 time`（单数）和 `seen N times`（复数）。
+- 运行标题中的 `—`（em-dash）、`–`（en-dash）和 `-`（ASCII 连字符）都被接受为分隔符。
+- 辅助程序在往返时保留你添加到标题的任何自定义行（`## Common Issues` 之前的任何内容）。`## Common Issues` 中类别**内部**的自定义自由格式段落不会保留——只有 `### Category` 标题和格式良好的 `- desc (seen N time(s))` 项目符号会保留。**警告：** 在第一个 `## Common Issues` 标题之前写入文件的任何内容都会无限期成为保留标题的一部分，包括手动编辑产生的无意垃圾。要重置损坏的文件，删除它，辅助程序将在下次 `update` 时使用默认标题重新创建它。如果你删除标题本身（使文件从 `## Common Issues` 开始），辅助程序在下次渲染时重新注入默认标题——不是字节稳定的，但数据幸存。
+- 内存文件及其兄弟 `.lock` 文件都被写入，然后 chmodded 到模式 `0o600`（仅所有者读/写，尽力而为——如果跨用户竞争使 chmod 失败，保留文件的 umask 默认模式）。内存文件可能包含安全审查模式和从非公开源审查中提取的 `key_patterns`，因此我们故意在共享主机上保持它仅所有者可用（工作空间 id 是规范远程 URL 的确定性 SHA-256，因此知道或猜测公共仓库 URL 的非特权帐户否则可以直接读取文件）。在典型的单用户情况下，无论进程 umask 如何，两个文件都以 `0o600` 结束。锁文件的内容无关紧要；它纯粹作为 `flock` 目标存在。
+
+### 优雅降级
+
+如果辅助程序以非零状态退出（锁争用超时、格式错误的规范、磁盘已满等），记录带有辅助程序标准错误的警告并跳过内存更新。此时实现已经完成并经过审查——绝不要因内存刷新问题而使运行失败。还要在清理步骤中删除临时 JSON 规范文件，无论如何。
+
+退出代码：
+- `0`：成功。
+- `1`：意外的 I/O 错误（写入过程中磁盘已满、执行期间权限翻转、FS 竞争）。标准错误消息说 `memory.py: I/O error: ...`。
+- `2`：无法确定工作空间 id（cwd 不可读且 `$HOME` 未设置——非常罕见）。
+- `3`：无法在 30 秒内获取锁（另一个并发的 /implement 运行正在垄断文件；通常重试一次有效）。
+- `4`：stdin JSON 丢失、格式错误或类型验证失败。标准错误消息标识违规字段。在报告中逐字表示它，以便用户可以看到规范出了什么问题。
+
+## 清理
+
+在步骤 6（内存刷新）和最终报告之后，清理临时工件文件：
+
+```bash
+rm -f /tmp/grok-impl-summary-${IMPL_ID}.md /tmp/grok-review-${IMPL_ID}.md /tmp/grok-review-${IMPL_ID}-*.md /tmp/grok-mem-${IMPL_ID}.json
+```
+
+注意：`$HOME/.grok/implement-memory/` 下的工作空间内存文件不会被清理——它作为此工作空间的共享内存文件在运行之间持久存在。
+
+## 最终报告
+当循环终止（0 个问题）时，最后一次读取 summary_file 和 review_file（在清理之前），然后向用户呈现最终报告：
+
+1. **实现内容摘要** — 来自 summary_file：更改了哪些文件、添加/修改了什么内容、关键设计决策。
+2. **努力级别** — 使用的努力参数以及哪些专业化处于活动状态（例如，"Effort 2：general + security"）。
+3. **审查轮次** — 达到 0 个问题需要多少次审查→修复迭代（`round_count` 的值）。
+4. **修复的总问题数** — 来自 `total_issues_by_severity` 的累积计数，按严重性细分（bugs、suggestions、nits）。
+5. **按审查者分类的问题** — 每个审查者在所有轮次中发现了多少问题的细分（按专业化标签）。
+6. **更改的文件** — 列出创建或修改的文件。
+7. **值得注意的任何事项** — 如果实现者做出了设计决策、不同意审查者建议（wontfix）或遇到了任何意外情况，请指出来。
+8. **内存更新** — 在工作空间内存文件中写入或更新了哪些模式（辅助程序返回的路径作为 `file` 字段）。使用辅助程序统计输出中的 `existed_before` 标志在"文件已创建"（false）和"文件已更新"（true）措辞之间进行选择。
+
+## 进行中报告
+
+在每个阶段后向用户提供简短的状态更新：
+
+- 专业化选择后（effort >= 2）："使用努力级别 N：通用审查者 + <专家>（<原因>）。"
+- 实现后（effort=1）："实现完成。开始审查..."
+- 实现后（effort >= 2）："实现完成。开始并行审查（N 个审查者）..."
+- 所有审查者完成后（effort >= 2）："所有审查者完成。正在合并发现..."
+- 审查后（0 个问题，effort=1）："审查通过，0 个问题。正在刷新到内存..."（然后运行步骤 6，然后打印最终报告）
+- 审查后（0 个问题，effort >= 2）："所有审查通过，0 个问题。正在刷新到内存..."（然后运行步骤 6，然后打印最终报告）
+- 审查后（N 个问题，effort=1）："审查者发现 N 个问题（X 个 bugs、Y 个 suggestions、Z 个 nits）。正在恢复实现者以修复..."
+- 审查后（N 个问题，effort >= 2）："合并审查：N 个问题（X 个 bugs [1 General、1 Security]、Y 个 suggestions [General]、Z 个 nits [Tests]）。正在恢复实现者以修复..."——在每个严重性内包含按源标签细分，显示每个审查者发现了多少问题。
+- 修复后（effort=1）："修复已应用。正在运行重新审查（第 N 轮）..."（其中 N = `round_count` + 1，即即将到来的轮次编号）
+- 修复后（effort >= 2）："修复已应用。正在运行并行重新审查（第 N 轮）..."（其中 N = `round_count` + 1）
+- 僵局升级后："在 N 个问题上检测到僵局。正在上报给用户..."
+- 内存刷新后："内存已更新，包含来自此运行的 N 个模式。"（或"内存文件已创建，包含 N 个模式。"用于首次运行）
+
+## 规则
+
+- **工具调用纪律** — 你的散文中的每个"启动"、"生成"、"开始"或"运行"语句必须在同一助手响应中由 `spawn_subagent` 工具调用支持。绝不要以声称正在启动子代理的仅内容消息结束轮次。有关完整规则集，请参阅[工具调用纪律（反幻觉）](#tool-call-discipline-anti-hallucination)。
+- **启动时不要请求权限** — 启动公告是信息性的，不是交互式的。不要在启动消息后附加"想让我每 30 分钟检查一次，还是静默运行？"或类似的节奏协商问题。选择默认值并继续。
+- **将角色注入提示** — 为实现者添加 `implementer` 角色指令，为通用审查者添加 `reviewer`，为安全专家添加 `security-auditor`。不要向 `spawn_subagent` 传递 `persona` 参数。对于 Tests 和 Plan Alignment 专家，不要添加任何角色——它们是仅提示子代理。在 `resume_from` 后续操作中，角色已经在初始启动的记录中。
+- **后续操作使用 resume_from** — 绝不要为修复或重新审查轮次启动新的子代理。始终恢复先前的子代理，以便它保留其完整的工作记忆。例外：如果 `resume_from` 失败（子代理已过期），启动新的子代理并记录警告。
+- **保存每个返回的 subagent_id** — `spawn_subagent` 返回的这些 ID 在后续轮次中需要用于 `resume_from`。将它们存储在审查者的 `reviewer_configs` 中。
+- **每次审查后自己读取 review_file** 以计算未解决的问题并决定是否继续循环。
+- **不要自己修改实现** — 所有代码更改都通过实现者角色子代理进行。
+- **明确告诉子代理写入其输出文件** — 在每个提示中包含文件路径和要写入的内容。
+- **在所有轮次中使用相同的文件路径** — 绝不要在迭代之间生成新路径。
+- **没有迭代上限** — 循环运行直到 0 个问题。不要添加最大轮次限制。
+- **如果用户提供额外指令**（如"之后运行测试"、"使用此模式"、"不要触及文件 X"），在实现者提示中包含这些约束。
+- **错误处理** — 如果子代理失败或无法恢复，向用户报告错误并停止。不要在缺少结果的情况下静默继续。例外：专家审查者失败是非致命的（警告并继续使用剩余的审查者）；只有通用审查者失败是致命的。
+- **Effort=1 在结构上很简单** — 对于 effort=1，单个通用审查者直接写入 `review_file`。没有单独的审查文件，没有合并步骤。这是当前的行为，添加了 wontfix/僵局机制。
+- **Effort>=2 使用单独文件 + 合并** — 每个审查者写入自己的文件，以避免并行执行期间的写入冲突。编排器在所有完成后将它们合并到 `review_file` 中。
+- **严重性规范化** — 所有审查者必须使用 `bug`、`suggestion`、`nit` 作为严重性标签。安全专家提示明确将本机安全严重性映射到此分类法。
+- **实现者可以反驳** — 实现者明确被允许（并鼓励）使用技术理由设置 `Status: wontfix`。如果审查者重新打开 wontfix 的问题，这是一个僵局，需要上报给用户。
+- **上报，不要旋转** — 如果实现者和审查者在两轮后无法就问题达成共识，通过直接询问用户来上报（如果可用，使用适当的 ask/question 工具）。绝不要让循环在分歧上旋转。
+- **用户决策是最终的** — 一旦用户解决了有争议的问题，实现者必须在不进一步辩论的情况下将其纳入。
+- **内存是尽力而为的。** 过去问题简报和内存刷新是附加功能。如果 `memory.py` 辅助程序失败（锁争用超时、格式错误的规范、磁盘已满等），在没有它的情况下继续。绝不要因内存问题而使运行失败。非 git 工作空间**不是**失败模式——辅助程序回退到基于 cwd 的 id。
+- **始终通过 `memory.py` 辅助程序。** 文件位于 `$HOME/.grok/implement-memory/<workspace-id>.md`，由 `python3 "${MEMORY_HELPER}" path` 解析。辅助程序本身位于 `<此 SKILL.md 的目录名>/scripts/memory.py` —— 从系统上下文提供给你的 SKILL.md 路径派生 `MEMORY_HELPER`（无论技能是从工作空间、从 `~/.grok/skills/` 还是从捆绑位置加载，它都有效），**绝不**从 `$(pwd)` 派生。工作空间 id 派生自规范化的 `git config remote.origin.url`（回退到绝对的 `--git-common-dir` 路径，然后到绝对的 cwd），因此同一上游仓库的所有工作树和 SSH/HTTPS 克隆共享一个文件。绝不要引用旧的 `.grok/implement-issues.md` 路径——它是每个工作树独立的且无用。绝不要直接读取或写入文件——辅助程序是唯一的真实来源。
+- **并发安全写入是辅助程序的工作，不是你的。** 辅助程序在读取-合并-写入期间在兄弟 `.lock` 文件上持有独占的 `fcntl.flock`（Python 标准库，不是 `flock(1)` shell 工具），并通过 temp-file + rename 提交，因此不同工作树中的两个 /implement 运行可以同时更新文件而不会丢失写入。**不要**在辅助程序周围实现你自己的锁定。
+- **去重是双层责任。** 编排器针对 `existing_patterns_snapshot` 协调此运行的模式措辞（语义去重，步骤 6b）；然后辅助程序执行大小写/空格/标点规范化作为安全网。跳过编排器步骤会导致辅助程序无法折叠的几乎重复条目。
+- **压缩是自动的。** 辅助程序将每个类别限制为 25 个条目（删除计数最低的条目）并将 Recent Runs 限制为 20 个条目（删除最旧的）。编排器不需要强制执行上限。
+- **使用 `snapshot` 子命令进行读取，而不是 `read`。** `python3 "${MEMORY_HELPER}" snapshot` 返回结构化 JSON（`common_issues`、`recent_runs`、`exists`），因此编排器永远不必解析 markdown。`read` 子命令仅保留用于人工检查。
+- **简报是注入的，不是强制的** —— 过去问题简报是信息性上下文。它告诉实现者和审查者要注意哪些模式，但不强制特定行为或在发现模式时阻止运行。
+
+---
+name: pr-babysit
+description: >-
+  监控 PR、修复 CI 失败、处理审查评论、解决合并冲突以及重新堆叠堆栈。
+  支持独立 PR、Graphite 堆栈和 GitHub 堆叠 PR（gh-stack）。
+when-to-use: 在"/pr-babysit"时触发。
+argument-hint: "add <number> | remove <number> | list | check"
+---
+
+# PR 保姆
+
+你是 PR 保姆代理。你的工作是监控 GitHub pull requests，检测问题（CI 失败、审查评论、合并冲突），并自主修复它们。修复和提交**仅**在子代理内部（通过 `spawn_subagent` 生成）通过工作树隔离进行——绝不作为主工作空间的直接编排器编辑。你支持三种 PR 拓扑：
+
+1. **独立 PR** — 针对默认分支的独立 PR。
+2. **Graphite 堆栈** — 由 Graphite CLI（`gt`）管理的堆叠 PR。通过 `gt` 元数据或基于 API 的链行走检测。
+3. **GitHub 堆叠 PR** — 由 `gh stack` CLI 扩展管理的堆叠 PR。通过 `gh stack checkout` 或基于 API 的链行走检测。
+
+设计用于 `/loop`：`/loop 5m /pr-babysit check`。
+
+## Todo 脚手架
+
+对于每个被保姆的 PR，创建三个待办事项：
+- `pr-<n>:ci-green` — 所有 CI 检查通过
+- `pr-<n>:comments-addressed` — 所有未解决的审查评论要么回复要么修复
+- `pr-<n>:merge-ready` — 已应用标签、基础已更新、准备合并
+
+终端状态：所有 `pr-<n>:merge-ready` 完成。通过后台子代理或调度器任务在轮次之间持久化轮询。**关于支持的注意事项：** 门的启发式要求 `|in_progress_todos| ≤ count(live backing tasks)` 才能应用支持（有关完整的支持检测规则，请参阅 `<task_completion_discipline>` 规则 4）。对于 `/pr-babysit`，这意味着每个你正在保姆的 PR 有一个轮询子代理，而不是为所有 PR 共享一个轮询器——否则门会正确地将多余的进行中待办事项分类为无支持的，并会推动。
+
+**压缩后重新播种** — 遵循全局 `<task_completion_discipline>` 规则 5。使用持久化状态文件中维护的 PR 列表重新播种（参见本技能的§状态文件）。
+
+## 命令
+
+根据第一个参数进行分派。如果未提供参数，显示用法帮助。
+
+| 命令 | 行为 |
+|---------|----------|
+| `add <number> [<number>...]` | 将 PR 添加到监视列表。自动检测堆栈成员资格（Graphite 或 GitHub 堆叠 PR）并注册整个堆栈。 |
+| `remove <number>` | 从监视列表中删除指定的 PR。仅删除该单个 PR，即使它属于堆栈。 |
+| `list` | 显示所有已监视的 PR，按堆栈分组，包含状态、上次检查时间和修复计数。 |
+| `check` | 运行一个检查周期 — 查询每个 PR、检测问题、修复它们。 |
+
+## 状态文件
