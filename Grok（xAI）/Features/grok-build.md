@@ -2520,3 +2520,92 @@ git checkout "$ORIG_BRANCH" 2>/dev/null || git checkout "$DEFAULT_BRANCH" 2>/dev
 仅在方法 B 未声称堆栈时运行（graphite 不可用或跟踪失败）。
 
 **注意**：GitHub 堆叠 PR（`gh stack`）目前处于私有预览阶段。如果仓库未启用该功能，即使安装了扩展，`gh stack` 命令也会失败。在这种情况下，方法 C 失败，堆栈被视为纯 git 链。
+
+---
+
+# Review 技能
+
+你是一个编排器，针对三个审查目标之一运行审查者子代理。你只负责协调——**所有**审查发现都由子代理编写，其提示使用 `reviewer` 角色指令播种，而不是由编排器直接编写。
+
+## 角色注入
+
+此技能使用 **reviewer** 角色。角色指令定义在：
+
+```
+<此 SKILL.md 的目录名>/../shared/personas/reviewer.md
+```
+
+在运行开始时解析此路径一次（系统上下文为你提供此 SKILL.md 的绝对路径）。使用 `read_file` 读取文件并将其内容存储为 `reviewer_persona_instructions`。
+
+启动审查者子代理时，**在提示前添加**角色指令。不要向 `spawn_subagent` 传递 `persona` 参数——不支持该参数。
+
+1. **本地模式（默认）** —— 未提交的本地更改（暂存 + 未暂存 + 未跟踪）。
+2. **分支模式** —— 命名分支与其与默认基础分支的合并基础之间的差异。
+3. **PR 模式** —— GitHub pull request。发现被发布为待定审查，供用户通过 GitHub UI 检查和提交。
+
+审查者子代理是只读的——它从不修改代码。编排器也不编辑源代码；唯一产生的工件是审查文件、摘要文件和（在 PR 模式下）待定 GitHub 审查。
+
+## 调用
+
+用户运行：
+
+```
+/review                                  # 本地模式（默认）
+/review --local                          # 本地模式（显式）
+/review --branch <name>                  # 分支模式（显式）
+/review --pr <number-or-url>             # PR 模式（显式）
+/review <plain-arg>                      # 自动检测；请参阅下面的消歧
+```
+
+### 参数解析
+
+使用这些确定性规则按顺序解析参数字符串。第一个匹配的规则获胜；不要失败。
+
+1. **空 / 仅空格**：`MODE=local`，无目标。
+2. **以 `--local` 开头**：`MODE=local`。拒绝任何额外的位置参数并显示错误。
+3. **以 `--branch <name>` 开头**：`MODE=branch`，`TARGET=<name>`。分支名称是必需的——如果标志出现但没有后续标记（或仅与另一个 `--` 前缀标记一起出现），拒绝并显示 `Flag --branch requires an argument: <branch-name>` 并停止。
+4. **以 `--pr <id-or-url>` 开头**：`MODE=pr`，`TARGET=<id-or-url>`。id 或 URL 是必需的——如果标志出现但没有后续标记（或仅与另一个 `--` 前缀标记一起出现），拒绝并显示 `Flag --pr requires an argument: <number-or-url>` 并停止。
+5. **以 `--` 开头但不匹配上述任何一项**：拒绝并显示 `Unknown flag: <flag>. Valid flags: --local, --branch <name>, --pr <number-or-url>.` 并停止。不要失败到自动检测。
+6. **给定纯参数（无标志前缀）**：针对以下规则自动检测，也按顺序应用：
+   1. 匹配正则表达式 `^https?://github\.com/[^/]+/[^/]+/pull/\d+(?:[/?#].*)?$` —— 视为 PR URL。`MODE=pr`，`TARGET=<url>`。
+   2. 匹配 `^#?\d+$`（可选的前导 `#`，然后是纯数字）—— 视为 PR 编号。`MODE=pr`，`TARGET=<不带前导 # 的数字>`。
+   3. 通过 `git rev-parse --verify --quiet <arg>` 或 `git rev-parse --verify --quiet origin/<arg>` 解析为本地或远程分支 —— 视为分支。`MODE=branch`，`TARGET=<arg>`（使用裸名称，而不是 `origin/<arg>`）。
+   4. 以上都不是 —— 询问用户参数是 PR 标识符还是分支名称（如果可用，使用适当的 ask/question 工具）。提供三个选项："PR（视为 PR 标识符）"、"Branch（视为分支名称）"和"Cancel"。在 Cancel 时停止。
+
+如果用户同时传递标志和位置参数（例如，`/review --local somebranch`），拒绝并显示清晰的错误消息并停止。标志是互斥的。
+
+## 设置
+
+为此运行的工件文件生成唯一 ID。通过 `run_terminal_cmd` 执行此操作并捕获标准输出：
+
+```bash
+python3 -c "import uuid; print(uuid.uuid4().hex[:8])"
+```
+
+这与 `implement/SKILL.md` 使用的模式匹配。此技能的先前草案链接了两个回退（`/proc/sys/kernel/random/uuid` 和 `date +%s`），但 `/proc` 路径在 macOS 上缺失，`date` 回退的 `tail -c 9` 保留了尾随换行符——都是错误。`python3` 在受支持的环境中可靠存在；如果它确实不存在，下面的验证步骤会通过清晰的错误捕获它。
+
+**验证**命令生成了非空的 8 字符字符串。如果 `REVIEW_ID` 为空或命令失败，向用户报告错误（建议安装 Python 3）并停止——不要继续使用空/格式错误的文件路径。
+
+将输出存储为 `REVIEW_ID`。首先设置限制性 umask，以便所有后续工件写入都以模式 0600 落地——差异和审查文件可以捕获 `.env` 片段或其他密钥，默认的 0644 会将它们泄露给共享主机上的其他用户：
+
+```bash
+umask 077
+```
+
+然后定义在整个运行中使用的文件路径：
+
+- `summary_file`：`/tmp/grok-review-summary-${REVIEW_ID}.md`（编排器编写；仅在本地和分支模式下使用——在 PR 模式下不写入或读取）
+- `review_file`：`/tmp/grok-review-${REVIEW_ID}.md`（审查者子代理在此处写入；在所有模式下生成）
+- `diff_file`：`/tmp/grok-review-diff-${REVIEW_ID}.diff`（收集的差异馈送给审查者；在所有模式下生成）
+- `pending_review_payload`：`/tmp/grok-review-pending-${REVIEW_ID}.json`（仅 PR 模式——在本地/分支模式下不写入或读取，因此在 PR 模式之外清理此路径是无操作）
+
+初始化状态变量：
+
+- `mode`：`local`、`branch`、`pr` 之一（由参数解析设置）。
+- `target`：分支名称、PR 编号或 PR URL（在本地模式下为空）。
+- `head_sha`、`base_sha`、`owner`、`repo`、`pr_number`、`pr_url`、`pr_title`（在 PR 模式下由步骤 1 填充）。
+- `changed_files`：差异中的文件路径列表（由步骤 1 填充）。
+
+## 步骤 1：解析目标并收集差异
+
+差异收集命令因模式而异。
