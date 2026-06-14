@@ -2291,3 +2291,232 @@ argument-hint: "add <number> | remove <number> | list | check"
 | `check` | 运行一个检查周期 — 查询每个 PR、检测问题、修复它们。 |
 
 ## 状态文件
+状态文件是**每个会话独立的**，以便并发的 Grok 会话不会相互干扰。子代理 ID 和工作树路径是会话范围的，不能在会话之间共享。
+
+路径：`~/.grok/plugin-data/pr-babysit/watched-prs-<INSTANCE_ID>.json`
+
+`<INSTANCE_ID>` 是在第一个 `add` 命令时每个会话生成一次的 UUID，并存储在状态文件中。这避免了依赖任何外部会话 ID（模型无法访问）。
+
+### 状态文件生命周期
+
+1. **会话中的第一个 `add`**：通过 `python3 -c "import uuid; print(uuid.uuid4())"` 生成 UUID，创建嵌入该 UUID 的状态文件，并持久化文件名。在会话的其余时间在内存中保留 `INSTANCE_ID`。
+2. **同一会话中的后续 `add` / `remove` / `list` / `check` 调用**：代理已经从第一个 `add` 调用中知道 `INSTANCE_ID`（它在对话上下文中）。使用相同的文件名。
+3. **`/loop` 调度调用**：`/loop` 调度器在同一会话中触发，因此代理的对话上下文保留 `INSTANCE_ID`。如果由于任何原因 `INSTANCE_ID` 不在上下文中（例如，在上下文压缩之后），扫描 `~/.grok/plugin-data/pr-babysit/` 以查找 `watched-prs-*.json` 文件，并选择其 `instance_id` 字段与最近修改的文件匹配的文件，或其 PR 与当前仓库匹配的文件。如果恰好一个文件与当前仓库匹配，使用它。
+
+如果目录和文件不存在，创建它们：
+
+```bash
+mkdir -p ~/.grok/plugin-data/pr-babysit
+INSTANCE_ID=$(python3 -c "import uuid; print(uuid.uuid4())")
+```
+
+使用以下内容初始化：
+
+```json
+{
+  "instance_id": "<INSTANCE_ID>",
+  "prs": [],
+  "groups": {}
+}
+```
+
+监视的 PR 条目的完整架构：
+
+```json
+{
+  "number": 170734,
+  "repo": "xai-org/xai",
+  "branch": "skory/feature-part-1",
+  "stack_id": "abc123",
+  "stack_type": "graphite",
+  "stack_position": 0,
+  "added_at": "2026-04-13T12:00:00Z",
+  "last_checked": "2026-04-13T12:05:00Z",
+  "last_status": "healthy",
+  "check_count": 12,
+  "fix_count": 2
+}
+```
+
+字段：
+- `number` — GitHub PR 编号。
+- `repo` — `owner/name` 格式的仓库。
+- `branch` — 头分支名称。
+- `stack_id` — 同一堆栈中 PR 的共享标识符（如果是独立的则为 `null`）。对于 Graphite 堆栈，这是底部分支名称。对于 GitHub 堆叠 PR，这是 `"gh-stack-<bottom_pr_number>"`。
+- `stack_type` — 以下之一：`"graphite"`、`"github"`（通过 `gh stack` 的 GitHub 堆叠 PR）或 `null`（独立/纯 git）。确定用于重新堆叠/推送操作的 CLI 工具。
+- `stack_position` — 到主干的距离（0 = 最接近主干，即堆栈底部）。
+- `added_at` — 添加 PR 时的 ISO 8601 时间戳。
+- `last_checked` — 上次检查周期的 ISO 8601 时间戳。
+- `last_status` — 以下之一：`"healthy"`、`"ci_failed"`、`"ci_needs_attention"`、`"changes_requested"`、`"review_comments"`、`"conflicts"`、`"pending"`、`"mergeable_unknown"`、`"error"`。
+- `check_count` — 针对此 PR 运行的检查周期总数。
+- `fix_count` — 应用的自动修复总数。
+
+`groups` 映射的完整架构（跟踪每个非重叠组的子代理和工作树）：
+
+```json
+{
+  "groups": {
+    "<group_key>": {
+      "subagent_id": "019d91b8-21e0-7c41-91a0-2b163d2c5481",
+      "worktree_path": "/path/to/worktree"
+    }
+  }
+}
+```
+
+- `<group_key>` — 堆栈的 `stack_id` 或独立 PR 的 `"pr-<number>"`。
+- `subagent_id` — 处理此组的最后一个子代理的 ID。与 `resume_from` 一起使用，以在检查周期之间继续子代理的对话。
+- `worktree_path` — `spawn_subagent` 创建的工作树的绝对路径。在删除组中的所有 PR 时用于清理。
+
+当清理组时（删除所有 PR），删除其 `groups[group_key]` 条目。
+
+**多仓库安全**：检查周期通过以下方式确定当前仓库：
+
+```bash
+gh repo view --json nameWithOwner --jq '.nameWithOwner'
+```
+
+仅处理其 `repo` 字段与此值匹配的 PR。将 `nameWithOwner` 拆分为 `OWNER` 和 `REPO` 以进行 API 调用。
+
+## 添加 PR
+
+当用户运行 `/pr-babysit add <number> [<number>...]` 时：
+
+### 步骤 1：验证身份验证
+
+```bash
+gh auth status
+```
+
+如果未经过身份验证，报告错误并停止。
+
+### 步骤 2：获取 PR 详细信息
+
+对于每个 PR 编号：
+
+```bash
+gh pr view <number> --json headRefName,baseRefName,url,title,state,number
+```
+
+验证 PR 存在且处于打开状态。如果已合并或已关闭，通知用户并跳过。
+
+确定当前仓库：
+
+```bash
+gh repo view --json nameWithOwner --jq '.nameWithOwner'
+```
+
+将此值存储为此调用中创建的所有 PR 条目的 `repo` 字段。
+
+### 步骤 3：检测堆栈成员资格
+
+堆栈检测确定 PR 是独立的还是堆栈的一部分（Graphite 或 GitHub 堆叠 PR）。按顺序尝试三种方法；第一个找到多分支堆栈的方法获胜。
+
+#### 方法 A：基于 API 的链检测（通用，始终首先运行）
+
+此方法无论使用哪个工具创建堆栈都有效。它检测任何 PR 链，其中每个 PR 的基础分支是另一个 PR 的头分支。
+
+```bash
+# 获取仓库的默认分支
+DEFAULT_BRANCH=$(gh repo view --json defaultBranchRef --jq '.defaultBranchRef.name')
+
+# 获取添加的 PR 的基础分支
+BASE=$(gh pr view <number> --json baseRefName --jq '.baseRefName')
+HEAD=$(gh pr view <number> --json headRefName)
+```
+
+如果 `BASE == DEFAULT_BRANCH`，PR 可能仍然在堆栈中间（其他 PR 可能以其头分支为目标）。检查两个方向：
+
+一次获取仓库中所有打开的 PR 并在两个方向上重用：
+
+```bash
+# 获取仓库中所有打开的 PR（用于向下和向上堆栈行走）
+ALL_PRS=$(gh pr list --state open --json number,headRefName,baseRefName --limit 200)
+```
+
+**向下行走**（朝向主干）：从添加的 PR 开始，通过查找哪个打开 PR 的 `headRefName` 与当前 PR 的 `baseRefName` 匹配来跟随 `baseRefName`。重复直到 `baseRefName == DEFAULT_BRANCH`。
+
+**向上行走**（远离主干）：查找其 `baseRefName` 与当前 PR 的 `headRefName` 匹配的打开 PR，并继续向上。重复直到不再找到 PR。
+结果是一个有序的 `(number, headRefName, baseRefName)` 元组列表，自下而上排序（最接近主干的在前）。
+
+如果只找到一个 PR（没有链），则此 PR 是独立的。继续执行步骤 4。
+如果找到多个 PR，这是一个堆栈。继续执行方法 B/C 以确定堆栈类型和工具。
+
+#### 方法 B：Graphite CLI 检测
+
+仅在 API 链检测到多个 PR 时运行。
+
+```bash
+# 检查 graphite CLI 是否可用
+gt --version 2>/dev/null
+```
+
+如果 graphite 可用：
+
+```bash
+git fetch origin <headRefName>
+gt checkout <headRefName> 2>/dev/null
+```
+
+如果 `gt checkout` 成功（分支在本地由 graphite 跟踪），通过行走验证堆栈：
+
+```bash
+# 转到堆栈底部
+gt bottom 2>/dev/null
+
+# 自下而上收集分支
+STACK_BRANCHES=()
+while true; do
+  BRANCH=$(git branch --show-current)
+  STACK_BRANCHES+=("$BRANCH")
+  # 尝试向上移动；如果 gt up 失败，我们在顶部
+  gt up 2>/dev/null || break
+done
+```
+
+如果 `gt checkout` 失败（分支未跟踪——**在不同机器上创建 PR 时很常见**），使用 API 检测到的链将堆栈导入 graphite：
+
+```bash
+# 从远程同步 graphite 元数据。
+# 警告：--force 覆盖所有本地 Graphite 元数据。这在
+# 跨机器场景中是安全的，但可能会中断其他本地跟踪的 Graphite 堆栈。
+# 记录此操作成功或失败以供调试。
+gt sync --force --no-interactive 2>/dev/null || true
+
+# 同步后再次尝试 checkout
+gt checkout <headRefName> 2>/dev/null
+```
+
+如果 checkout 仍然失败，使用 API 检测到的拓扑手动跟踪链中的每个分支：
+
+```bash
+# 保存当前分支以在跟踪后恢复
+ORIG_BRANCH=$(git branch --show-current || echo "main")
+
+# 对于 API 检测到的链中的每个分支（自下而上顺序）：
+# 第一个分支的父级是默认分支
+git fetch origin
+for i in "${!CHAIN_BRANCHES[@]}"; do
+  BRANCH="${CHAIN_BRANCHES[$i]}"
+  if [ $i -eq 0 ]; then
+    PARENT="$DEFAULT_BRANCH"
+  else
+    PARENT="${CHAIN_BRANCHES[$((i-1))]}"
+  fi
+  git checkout -B "$BRANCH" "origin/$BRANCH" 2>/dev/null
+  gt track --parent "$PARENT" --no-interactive 2>/dev/null || true
+done
+
+# 恢复原始分支以避免污染主工作空间
+git checkout "$ORIG_BRANCH" 2>/dev/null || git checkout "$DEFAULT_BRANCH" 2>/dev/null
+```
+
+跟踪后，使用 `gt bottom` / `gt up` 验证如上。如果行走成功并匹配 API 检测到的链，设置 `stack_type: "graphite"`。
+
+如果 graphite 跟踪仍然失败（例如，`gt track` 拒绝分支，仓库未初始化），继续执行方法 C。
+
+#### 方法 C：GitHub 堆叠 PR 检测
+
+仅在方法 B 未声称堆栈时运行（graphite 不可用或跟踪失败）。
+
+**注意**：GitHub 堆叠 PR（`gh stack`）目前处于私有预览阶段。如果仓库未启用该功能，即使安装了扩展，`gh stack` 命令也会失败。在这种情况下，方法 C 失败，堆栈被视为纯 git 链。
