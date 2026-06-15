@@ -25,3 +25,15 @@ venv/
 
 # 本地任务与协作记录
 .teamwork/
+
+# 敏感调查报告和本地配置
+.investigation/
+.claude/
+
+# 临时和备份文件
+*.backup
+*.bak
+
+# 内部任务文件
+task.md
+FINAL_SESSION_SUMMARY.md

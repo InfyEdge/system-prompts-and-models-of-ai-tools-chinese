@@ -3,10 +3,10 @@
 <div align="center">
 
 > **最近更新：** 2026-06-15  
-> **翻译进度：** 95.7% 完成（44/46 个文件）
+> **翻译进度：** 100% 完成（46/46 个文件）
 
 ![版本](https://img.shields.io/badge/版本-2.0.0-blue)
-![翻译进度](https://img.shields.io/badge/翻译进度-95.7%25-brightgreen)
+![翻译进度](https://img.shields.io/badge/翻译进度-100%25-brightgreen)
 ![许可](https://img.shields.io/badge/许可-MIT-green)
 ![贡献](https://img.shields.io/badge/欢迎-贡献-brightgreen)
 
@@ -24,7 +24,7 @@
 
 ### 完成情况
 - **总文件数**: 46 个系统提示词文件
-- **已完成翻译**: 44 个（95.7%）
+- **已完成翻译**: 46 个（100% 🎉）
 - **翻译行数**: 约 25,000+ 行
 - **翻译质量**: 纯中文，保持技术精度
 
@@ -76,6 +76,8 @@
 
 ### 新兴 AI 工具
 - **AWS Kiro**: Vibe/Spec/Mode 多模式
+  - 📄 **[中转站覆盖提示词](./AWS（Kiro）/中转站覆盖身份_Prompt.txt)** | [中文翻译](./AWS（Kiro）/中转站覆盖身份_Prompt_中文.txt)
+  - 技术特点：通过系统提示覆盖 Kiro 身份为 Claude Code
 - **Hume**: 语音 AI ✅
 - **MultiOn**: 浏览器 Agent ✅
 - **Lovable, Same.dev, Leap.new**: 快速开发平台
@@ -107,7 +109,7 @@
 ├── Hume（语音AI）/              # Hume Voice ✅
 ├── MultiOn（浏览器Agent）/       # MultiOn ✅
 ├── 字节跳动（豆包、Trae）/       # 字节系工具 ✅
-├── AWS（Kiro）/                 # Kiro AI
+├── AWS（Kiro）/                 # AWS Kiro AI（系统提示覆盖案例）
 ├── Cognition（Devin）/          # Devin AI
 ├── 其他厂商工具.../
 ├── Archive/                     # 归档的历史版本
@@ -154,7 +156,7 @@
 
 ## ✨ 项目特色
 
-- **翻译完整**: 95.7% 文件已完成纯中文翻译（不保留英文原文）
+- **翻译完整**: 100% 文件已完成纯中文翻译（不保留英文原文）🎉
 - **质量保证**: 保持原始技术精度，术语翻译统一（Artifacts→工件、Memory→记忆）
 - **覆盖全面**: 收录 40+ 主流与新兴 AI 工具，涵盖 8 家主要 AI 公司
 - **持续更新**: 持续跟踪新的提示词版本与工具变化
@@ -262,5 +264,5 @@
 ---
 
 **维护者**: [@InfyEdge](https://github.com/InfyEdge)  
-**最后更新**: 2026-06-15  
+**最后更新**: 2026-06-16  
 **翻译进度**: 95.7% (44/46)
